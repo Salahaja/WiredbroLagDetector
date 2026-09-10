@@ -1,6 +1,6 @@
 # Wirebro DDOS Lag Detector (v1.0.0)
 
-A connection-stability monitor for WoW 1.12 (vanilla) clients — tracks latency spikes and stalls, does a real chat round-trip ping, and optionally shares latency with your party/raid so you can tell whether a rough patch is just you or the whole server.
+A connection-stability monitor for WoW 1.12 (vanilla) clients — tracks latency spikes and stalls, does a real round-trip ping, and optionally shares latency with your party/raid so you can tell whether a rough patch is just you or the whole server.
 
 ## Why latency, not "world" latency
 
@@ -15,8 +15,8 @@ There's also no true packet-loss percentage exposed to addons at all — that's 
 - Rolling-average-based spike detection: flags a "warn"/"severe" state either from an absolute threshold or from a relative jump (3x your own recent average), so it adapts to your actual baseline instead of one hardcoded number.
 - Persisted, timestamped log (`/wdld log`) of every spike and recovery, survives reloads/relogs.
 
-### Chat round-trip ping
-- Sends a tiny addon message to yourself over the **GUILD** channel (invisible in chat — `WHISPER` is rejected outright by this client's `SendAddonMessage`, confirmed via testing, so GUILD is used instead; requires being in a guild) and times how long it takes to come back.
+### Round-trip ping
+- Sends a tiny addon message to yourself over the **GUILD** channel (invisible — `WHISPER` is rejected outright by this client's `SendAddonMessage`, confirmed via testing, so GUILD is used instead; requires being in a guild) and times how long it takes to come back.
 - This measures actual message-level round trip through the server, which can diverge from `GetNetStats()`'s latency number when the server itself is backed up rather than the network path.
 - Opt-in: run `/wdld pingtest` once to confirm it works before turning on the automatic background version.
 - Timeout is adaptive (2x your last real round trip, or 3x current home latency before any round trip has completed) rather than a fixed guess.
@@ -60,7 +60,7 @@ The client identifies an addon by its folder name, which must contain a matching
 
 ## Known limitations
 
-- **Requires a guild for the chat ping specifically.** The Group Latency sync (PARTY/RAID) doesn't need one.
+- **Requires a guild for the round-trip ping specifically.** The Group Latency sync (PARTY/RAID) doesn't need one.
 - **`GetNetStats()`'s exact field order isn't independently verified on every client build.** Run `/wdld probe` if the displayed numbers look wrong.
 - **Packet loss is inferred, not measured.** There's no API for a true loss percentage — latency spikes and ping timeouts are the closest available proxy.
 

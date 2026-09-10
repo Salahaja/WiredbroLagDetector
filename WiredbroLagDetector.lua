@@ -93,7 +93,9 @@ NW.severeThreshold = 1500
 -- of much larger messages. Our payload is a single timestamp (a few bytes),
 -- adjustable 0.5s-10s via the settings slider.
 NW.PING_PREFIX   = "WIREDBROLAG"
-NW.PING_INTERVAL = 30  -- seconds between automatic background pings (slider-adjustable)
+NW.PING_INTERVAL = 1  -- seconds between automatic background pings (slider-adjustable, 0.5-10s) -
+                       -- a few-byte payload, so there's no need to sit near RallyPower's 1-3s
+                       -- throttle floor meant for its much larger sync messages
 NW.pingEnabled   = false
 NW.pendingPing   = nil -- { sentAt = GetTime(), timeout = seconds, isTest = bool }
 NW.pingTimer     = 0
@@ -174,10 +176,10 @@ function NW.SetPingEnabled(enabled)
     NW.warnedNoGuild = false -- reset so a future guild-status change warns again
     if enabled then
         NW.pingTimer = NW.PING_INTERVAL -- fire the first one almost immediately
-        NW.Say("background chat round-trip pinging |cFF00FF7Fon|r - every " .. NW.PING_INTERVAL .. "s.")
+        NW.Say("background pinging |cFF00FF7Fon|r - every " .. NW.PING_INTERVAL .. "s.")
     else
         NW.pendingPing = nil
-        NW.Say("background chat round-trip pinging |cFFFF5179off|r.")
+        NW.Say("background pinging |cFFFF5179off|r.")
     end
     NW.UpdateChatRTTDisplay()
     if NW.settingsFrame and NW.settingsFrame.pingCheck then
@@ -214,7 +216,7 @@ function NW.CheckPendingPingTimeout()
         -- at 2, then only every 5th after that (5, 10, 15...) so a sustained
         -- outage doesn't spam chat once per ping interval forever.
         if NW.pingMissStreak == 2 or (NW.pingMissStreak > 2 and math.mod(NW.pingMissStreak, 5) == 0) then
-            NW.Say("|cFFFF3333chat round-trip ping got no reply " .. NW.pingMissStreak .. " times in a row|r (" ..
+            NW.Say("|cFFFF3333ping got no reply " .. NW.pingMissStreak .. " times in a row|r (" ..
                 string.format("%.1f", timeout) .. "s timeout) - possible message loss")
         end
     end
@@ -292,7 +294,7 @@ function NW.PingTest()
     end
     local timeout = NW.ComputePingTimeout()
     NW.Say("sending a ping over the GUILD addon-message channel (timeout " .. string.format("%.1f", timeout) ..
-        "s - invisible in chat, nothing will show up there even if this works)...")
+        "s - invisible, nothing will show up even if this works)...")
     NW.pingNonce = NW.pingNonce + 1
     local nonce = tostring(NW.pingNonce)
     local now = GetTime()
@@ -319,13 +321,13 @@ function NW.HandlePingReply(nonceStr)
 
     if rtt >= NW.severeThreshold then
         NW.PushLog("pingsevere", rtt)
-        NW.Say("|cFFFF3333chat round-trip spike: " .. rtt .. "ms|r")
+        NW.Say("|cFFFF3333ping spike: " .. rtt .. "ms|r")
     elseif rtt >= NW.warnThreshold then
         NW.PushLog("pingwarn", rtt)
     end
 
     if NW.pingMissStreak >= 2 then
-        NW.Say("|cFF00FF7Fchat round-trip ping back to normal|r (" .. rtt .. "ms) after " .. NW.pingMissStreak .. " missed in a row.")
+        NW.Say("|cFF00FF7Fping back to normal|r (" .. rtt .. "ms) after " .. NW.pingMissStreak .. " missed in a row.")
     end
     NW.pingMissStreak = 0
 
@@ -467,7 +469,7 @@ end
 -- ---------------------------------------------------------------------------------------------
 function NW.CreateFrame()
     local f = CreateFrame("Frame", "NW_Frame", UIParent)
-    f:SetWidth(170); f:SetHeight(58)
+    f:SetWidth(170); f:SetHeight(72) -- rttText sits at y=-44; the old 58 left only 14px below it, clipping descenders against the border
     f:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -200, -4)
     f:SetBackdrop({
         bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
@@ -476,6 +478,18 @@ function NW.CreateFrame()
         insets = { left = 4, right = 4, top = 4, bottom = 4 }
     })
     f:SetBackdropColor(0, 0, 0, 0.75)
+
+    -- Tinting the backdrop's own bgFile with SetBackdropColor multiplies against
+    -- that texture's (fairly dark) baked-in art, so an amber/red alarm tint there
+    -- barely reads as different from the default black fill. A flat solid-color
+    -- texture layered on top, alpha-controlled separately from the backdrop, gives
+    -- a real visible wash instead - see UpdateChatRTTDisplay.
+    local alarmTex = f:CreateTexture(nil, "BORDER")
+    alarmTex:SetPoint("TOPLEFT", f, "TOPLEFT", 5, -5)
+    alarmTex:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -5, 5)
+    alarmTex:SetTexture(0, 0, 0, 0)
+    f.alarmTex = alarmTex
+
     f:SetMovable(true); f:EnableMouse(true)
     f:RegisterForDrag("LeftButton")
     f:SetScript("OnDragStart", function() f:StartMoving() end)
@@ -557,10 +571,34 @@ local function MakeIntervalSlider(parent, name, y, labelPrefix, initialValue, on
     return slider
 end
 
+-- Makes a frame drag-to-move (same behavior as the main HUD) and persists its
+-- position under a SavedVariable, addressed here by plain global name via _G,
+-- so it survives reloads - see NW_FramePos on the main HUD for the original
+-- version of this pattern. applyDefaultPoint only runs the first time there's
+-- no saved position yet; once the user drags it, their spot always wins after.
+local function MakeMovable(frame, posVarName, applyDefaultPoint)
+    frame:SetMovable(true)
+    frame:EnableMouse(true)
+    frame:RegisterForDrag("LeftButton")
+    frame:SetScript("OnDragStart", function() frame:StartMoving() end)
+    frame:SetScript("OnDragStop", function()
+        frame:StopMovingOrSizing()
+        local point, _, relPoint, x, y = frame:GetPoint()
+        _G[posVarName] = { point = point, relPoint = relPoint, x = x, y = y }
+    end)
+
+    local saved = _G[posVarName]
+    if saved then
+        frame:ClearAllPoints()
+        frame:SetPoint(saved.point or "CENTER", UIParent, saved.relPoint or "CENTER", saved.x or 0, saved.y or 0)
+    else
+        applyDefaultPoint()
+    end
+end
+
 function NW.CreateSettingsFrame()
     local s = CreateFrame("Frame", "NW_SettingsFrame", UIParent)
     s:SetWidth(200); s:SetHeight(220)
-    s:SetPoint("TOP", NW.frame, "BOTTOM", 0, -6)
     s:SetBackdrop({
         bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
         edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
@@ -568,6 +606,21 @@ function NW.CreateSettingsFrame()
         insets = { left = 4, right = 4, top = 4, bottom = 4 }
     })
     s:SetBackdropColor(0, 0, 0, 0.85)
+
+    -- Default position tucks the panel below the main HUD, but if the HUD sits
+    -- low enough on screen that there's no room below it, this opens the panel
+    -- above the HUD instead - previously it always opened below and could end
+    -- up entirely off the bottom of the screen when the HUD was parked low.
+    MakeMovable(s, "NW_SettingsPos", function()
+        s:ClearAllPoints()
+        local roomBelow = (NW.frame:GetBottom() or 0) - 6
+        if roomBelow >= 220 then
+            s:SetPoint("TOP", NW.frame, "BOTTOM", 0, -6)
+        else
+            s:SetPoint("BOTTOM", NW.frame, "TOP", 0, 6)
+        end
+    end)
+
     s:Hide()
 
     local close = CreateFrame("Button", "NW_SettingsClose", s, "UIPanelCloseButton")
@@ -591,7 +644,7 @@ function NW.CreateSettingsFrame()
 
     local pingLabel = s:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     pingLabel:SetPoint("LEFT", pingCheck, "RIGHT", 4, 0)
-    pingLabel:SetText("Chat round-trip ping")
+    pingLabel:SetText("Round-trip ping")
     s.pingLabel = pingLabel
 
     s.pingIntervalSlider = MakeIntervalSlider(s, "NW_PingIntervalSlider", -100, "Ping interval", NW.PING_INTERVAL,
@@ -646,7 +699,6 @@ NW.rosterPage = 0
 function NW.CreateRosterFrame()
     local r = CreateFrame("Frame", "NW_RosterFrame", UIParent)
     r:SetWidth(220); r:SetHeight(20 + NW.ROSTER_PAGE_SIZE * 18 + 34)
-    r:SetPoint("LEFT", NW.settingsFrame, "RIGHT", 8, 0)
     r:SetBackdrop({
         bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
         edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
@@ -654,6 +706,22 @@ function NW.CreateRosterFrame()
         insets = { left = 4, right = 4, top = 4, bottom = 4 }
     })
     r:SetBackdropColor(0, 0, 0, 0.85)
+
+    -- Same off-screen problem as the settings panel, just sideways: this used
+    -- to always open to the right of the settings panel, which can run off the
+    -- edge of the screen depending on where settings ended up. Top edges are
+    -- aligned rather than vertically centered since this panel is much taller
+    -- than the settings one, to reduce the chance of it also running off top.
+    MakeMovable(r, "NW_RosterPos", function()
+        r:ClearAllPoints()
+        local roomRight = (UIParent:GetWidth() or 0) - (NW.settingsFrame:GetRight() or 0) - 8
+        if roomRight >= 220 then
+            r:SetPoint("TOPLEFT", NW.settingsFrame, "TOPRIGHT", 8, 0)
+        else
+            r:SetPoint("TOPRIGHT", NW.settingsFrame, "TOPLEFT", -8, 0)
+        end
+    end)
+
     r:Hide()
 
     local title = r:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -781,15 +849,29 @@ function NW.UpdateDisplay(latencyHome)
     local homeColor = NW.ColorFor(h, NW.warnThreshold, NW.severeThreshold)
     NW.frame.homeText:SetText("Home:  " .. homeColor .. h .. "ms|r")
 
+    NW.UpdateStatusText()
+    NW.UpdateChatRTTDisplay()
+end
+
+-- The top-right status word used to reflect NW.state (the GetNetStats() latency
+-- reading) only, so it kept saying "Normal" even while the chat round-trip ping
+-- was actively timing out - latencyHome can look fine while message delivery
+-- itself is failing. A live miss streak now takes priority over the latency
+-- state, since a sustained ping failure is a stronger signal of real trouble.
+function NW.UpdateStatusText()
+    if not NW.frame then return end
+
     local statusWord, statusColor = "Normal", "|cFF00FF7F"
-    if NW.state == "severe" then
+    if NW.pingMissStreak >= 5 then
+        statusWord, statusColor = "Likely DC", "|cFFFF3333"
+    elseif NW.pingMissStreak >= 2 then
+        statusWord, statusColor = "Degraded", "|cFFFFA500"
+    elseif NW.state == "severe" then
         statusWord, statusColor = "SEVERE", "|cFFFF3333"
     elseif NW.state == "warn" then
         statusWord, statusColor = "Warn", "|cFFFFA500"
     end
     NW.frame.statusText:SetText(statusColor .. statusWord .. "|r")
-
-    NW.UpdateChatRTTDisplay()
 end
 
 -- Separate from UpdateDisplay because a ping reply can arrive independently of a
@@ -798,25 +880,32 @@ end
 function NW.UpdateChatRTTDisplay()
     if not NW.frame then return end
     if not NW.pingEnabled then
-        NW.frame.rttText:SetText("Chat RTT:  |cFF888888off|r")
+        NW.frame.rttText:SetText("Ping:  |cFF888888off|r")
     elseif not NW.lastRTT then
-        NW.frame.rttText:SetText("Chat RTT:  |cFF888888--|r")
+        NW.frame.rttText:SetText("Ping:  |cFF888888--|r")
     else
         local color = NW.ColorFor(NW.lastRTT, NW.warnThreshold, NW.severeThreshold)
-        NW.frame.rttText:SetText("Chat RTT:  " .. color .. NW.lastRTT .. "ms|r")
+        NW.frame.rttText:SetText("Ping:  " .. color .. NW.lastRTT .. "ms|r")
     end
 
-    -- 2+ misses in a row tints the window amber (still recoverable, matches the
-    -- chat alert threshold), 5+ escalates to red for a sustained outage - both
-    -- kept dark enough that the existing text colors (white title, grey/green/
-    -- orange/red status text) stay readable instead of washing out.
+    -- 2+ misses in a row washes the window amber (still recoverable, matches the
+    -- chat alert threshold), 5+ escalates to red for a sustained outage. Driven
+    -- through f.alarmTex (a flat solid-color overlay, see CreateFrame) rather than
+    -- SetBackdropColor, since tinting the backdrop's own dark bgFile art barely
+    -- showed up. Text colors (white title, grey/green/orange/red status text)
+    -- still hold up fine against these alpha levels.
     if NW.pingMissStreak >= 5 then
-        NW.frame:SetBackdropColor(0.45, 0, 0, 0.85)
+        NW.frame.alarmTex:SetTexture(0.85, 0.05, 0.05, 0.6)
+        NW.frame:SetBackdropBorderColor(1, 0.2, 0.2, 1)
     elseif NW.pingMissStreak >= 2 then
-        NW.frame:SetBackdropColor(0.5, 0.42, 0, 0.85)
+        NW.frame.alarmTex:SetTexture(0.95, 0.65, 0, 0.6)
+        NW.frame:SetBackdropBorderColor(1, 0.82, 0, 1)
     else
-        NW.frame:SetBackdropColor(0, 0, 0, 0.75)
+        NW.frame.alarmTex:SetTexture(0, 0, 0, 0)
+        NW.frame:SetBackdropBorderColor(1, 1, 1, 1)
     end
+
+    NW.UpdateStatusText()
 end
 
 -- ---------------------------------------------------------------------------------------------
@@ -852,11 +941,11 @@ function NW.PrintLog()
         elseif e.kind == "warn" then
             DEFAULT_CHAT_FRAME:AddMessage("  [" .. e.time .. "] |cFFFFA500warn|r: " .. e.ms .. "ms")
         elseif e.kind == "pingtimeout" then
-            DEFAULT_CHAT_FRAME:AddMessage("  [" .. e.time .. "] |cFFFF3333chat ping lost|r (no reply within " .. string.format("%.1f", e.duration or 0) .. "s)")
+            DEFAULT_CHAT_FRAME:AddMessage("  [" .. e.time .. "] |cFFFF3333ping lost|r (no reply within " .. string.format("%.1f", e.duration or 0) .. "s)")
         elseif e.kind == "pingsevere" then
-            DEFAULT_CHAT_FRAME:AddMessage("  [" .. e.time .. "] |cFFFF3333chat RTT spike|r: " .. e.ms .. "ms")
+            DEFAULT_CHAT_FRAME:AddMessage("  [" .. e.time .. "] |cFFFF3333ping spike|r: " .. e.ms .. "ms")
         elseif e.kind == "pingwarn" then
-            DEFAULT_CHAT_FRAME:AddMessage("  [" .. e.time .. "] |cFFFFA500chat RTT elevated|r: " .. e.ms .. "ms")
+            DEFAULT_CHAT_FRAME:AddMessage("  [" .. e.time .. "] |cFFFFA500ping elevated|r: " .. e.ms .. "ms")
         else
             DEFAULT_CHAT_FRAME:AddMessage("  [" .. e.time .. "] " .. tostring(e.kind) .. ": " .. tostring(e.ms) .. "ms")
         end
