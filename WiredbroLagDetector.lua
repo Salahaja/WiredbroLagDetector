@@ -99,6 +99,7 @@ NW.pendingPing   = nil -- { sentAt = GetTime(), timeout = seconds, isTest = bool
 NW.pingTimer     = 0
 NW.lastRTT       = nil -- ms, nil until we get at least one reply
 NW.warnedNoGuild = false -- so the "not in a guild" notice fires once, not every ping cycle
+NW.pingMissStreak = 0 -- consecutive timed-out pings; gates chat alerts so one miss doesn't spam - see CheckPendingPingTimeout
 
 -- Group latency sync: broadcasts your own latency to PARTY/RAID (same
 -- addon-message mechanism, proven by Aegis_RallyPower on this exact channel -
@@ -202,7 +203,20 @@ function NW.CheckPendingPingTimeout()
             "s. Something ate it, or you're not actually in a guild right now.")
     else
         NW.PushLog("pingtimeout", NW.lastRTT or 0, timeout)
-        NW.Say("|cFFFF3333chat round-trip ping got no reply after " .. string.format("%.1f", timeout) .. "s - possible message loss|r")
+        NW.pingMissStreak = NW.pingMissStreak + 1
+
+        if NW.pingMissStreak >= 2 then
+            NW.lastRTT = nil
+            NW.UpdateChatRTTDisplay()
+        end
+
+        -- A single miss isn't an alarm - stay quiet on the first one, speak up
+        -- at 2, then only every 5th after that (5, 10, 15...) so a sustained
+        -- outage doesn't spam chat once per ping interval forever.
+        if NW.pingMissStreak == 2 or (NW.pingMissStreak > 2 and math.mod(NW.pingMissStreak, 5) == 0) then
+            NW.Say("|cFFFF3333chat round-trip ping got no reply " .. NW.pingMissStreak .. " times in a row|r (" ..
+                string.format("%.1f", timeout) .. "s timeout) - possible message loss")
+        end
     end
 end
 
@@ -309,6 +323,11 @@ function NW.HandlePingReply(nonceStr)
     elseif rtt >= NW.warnThreshold then
         NW.PushLog("pingwarn", rtt)
     end
+
+    if NW.pingMissStreak >= 2 then
+        NW.Say("|cFF00FF7Fchat round-trip ping back to normal|r (" .. rtt .. "ms) after " .. NW.pingMissStreak .. " missed in a row.")
+    end
+    NW.pingMissStreak = 0
 
     NW.UpdateChatRTTDisplay()
 end
@@ -785,6 +804,18 @@ function NW.UpdateChatRTTDisplay()
     else
         local color = NW.ColorFor(NW.lastRTT, NW.warnThreshold, NW.severeThreshold)
         NW.frame.rttText:SetText("Chat RTT:  " .. color .. NW.lastRTT .. "ms|r")
+    end
+
+    -- 2+ misses in a row tints the window amber (still recoverable, matches the
+    -- chat alert threshold), 5+ escalates to red for a sustained outage - both
+    -- kept dark enough that the existing text colors (white title, grey/green/
+    -- orange/red status text) stay readable instead of washing out.
+    if NW.pingMissStreak >= 5 then
+        NW.frame:SetBackdropColor(0.45, 0, 0, 0.85)
+    elseif NW.pingMissStreak >= 2 then
+        NW.frame:SetBackdropColor(0.5, 0.42, 0, 0.85)
+    else
+        NW.frame:SetBackdropColor(0, 0, 0, 0.75)
     end
 end
 
