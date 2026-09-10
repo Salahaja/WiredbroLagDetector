@@ -1,5 +1,5 @@
 ## Interface: 11200
-## Version: 1.0.3
+## Version: 1.0.4
 ## Title: Wirebro DDOS Lag Detector
 ## Notes: Latency/stability monitor - flags connection spikes and stalls with a timestamped log, so you can correlate rough patches with server attacks.
 ## Author: You

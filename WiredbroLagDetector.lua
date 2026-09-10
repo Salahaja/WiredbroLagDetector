@@ -838,6 +838,23 @@ function NW.ColorFor(ms, warn, severe)
     else return "|cFF00FF7F" end
 end
 
+-- Ping used to be colored against the same fixed warn/severe thresholds as
+-- Home latency, but the two measure different things (a message-level round
+-- trip vs GetNetStats()'s own reading) - someone with a consistently slow but
+-- stable connection would sit permanently yellow/red for no real reason.
+-- Comparing ping against your OWN current home latency instead flags when the
+-- round trip is disproportionately worse than your baseline, which is the
+-- actual signal something's wrong (1.5x home = yellow, 2.5x home = red).
+function NW.ColorForPing(rtt)
+    if NW.lastHomeLatency and NW.lastHomeLatency > 0 then
+        local ratio = rtt / NW.lastHomeLatency
+        if ratio >= 2.5 then return "|cFFFF3333"
+        elseif ratio >= 1.5 then return "|cFFFFA500"
+        else return "|cFF00FF7F" end
+    end
+    return NW.ColorFor(rtt, NW.warnThreshold, NW.severeThreshold)
+end
+
 function NW.UpdateDisplay(latencyHome)
     if not NW.frame then return end
 
@@ -884,7 +901,7 @@ function NW.UpdateChatRTTDisplay()
     elseif not NW.lastRTT then
         NW.frame.rttText:SetText("Ping:  |cFF888888--|r")
     else
-        local color = NW.ColorFor(NW.lastRTT, NW.warnThreshold, NW.severeThreshold)
+        local color = NW.ColorForPing(NW.lastRTT)
         NW.frame.rttText:SetText("Ping:  " .. color .. NW.lastRTT .. "ms|r")
     end
 
