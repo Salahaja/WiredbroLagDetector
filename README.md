@@ -1,4 +1,4 @@
-# Wirebro DDOS Lag Detector (v1.0.0)
+# Wiredbro's DDOS Lag Detector (v1.0.5)
 
 A connection-stability monitor for WoW 1.12 (vanilla) clients — tracks latency spikes and stalls, does a real round-trip ping, and optionally shares latency with your party/raid so you can tell whether a rough patch is just you or the whole server.
 

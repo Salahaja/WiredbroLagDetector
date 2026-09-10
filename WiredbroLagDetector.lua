@@ -2,7 +2,7 @@
     Addon:       WiredbroLagDetector (folder/internal name - ADDON_LOADED and
                  SavedVariables key off this, matching the folder/.toc/.lua
                  names; the internal Lua table is still NW for historical
-                 reasons, and it displays in-game as "Wirebro DDOS Lag Detector")
+                 reasons, and it displays in-game as "Wiredbro's DDOS Lag Detector")
     Description: Connection stability monitor. Vanilla's Lua API exposes latency
                  (GetNetStats: bandwidthIn, bandwidthOut, latencyHome, latencyWorld)
                  but NOT a true packet-loss percentage - that stat simply isn't
@@ -124,7 +124,7 @@ NW.rosterOrder   = {}  -- insertion-ordered names, for stable row layout
 -- Helpers
 -- ---------------------------------------------------------------------------------------------
 function NW.Say(msg)
-    DEFAULT_CHAT_FRAME:AddMessage("|cFFFF5179Wirebro DDOS Lag Detector|r: " .. msg)
+    DEFAULT_CHAT_FRAME:AddMessage("|cFFFF5179Wiredbro's DDOS Lag Detector|r: " .. msg)
 end
 
 function NW.Now()
@@ -214,10 +214,17 @@ function NW.CheckPendingPingTimeout()
 
         -- A single miss isn't an alarm - stay quiet on the first one, speak up
         -- at 2, then only every 5th after that (5, 10, 15...) so a sustained
-        -- outage doesn't spam chat once per ping interval forever.
+        -- outage doesn't spam chat once per ping interval forever. 20+ in a row
+        -- escalates the wording - that's no longer "possible message loss", it's
+        -- a real disconnect.
         if NW.pingMissStreak == 2 or (NW.pingMissStreak > 2 and math.mod(NW.pingMissStreak, 5) == 0) then
-            NW.Say("|cFFFF3333ping got no reply " .. NW.pingMissStreak .. " times in a row|r (" ..
-                string.format("%.1f", timeout) .. "s timeout) - possible message loss")
+            if NW.pingMissStreak >= 20 then
+                NW.Say("|cFFFF3333likely disconnected from the server|r - " .. NW.pingMissStreak ..
+                    " pings in a row with no reply")
+            else
+                NW.Say("|cFFFF3333ping got no reply " .. NW.pingMissStreak .. " times in a row|r (" ..
+                    string.format("%.1f", timeout) .. "s timeout) - possible message loss")
+            end
         end
     end
 end
@@ -503,7 +510,7 @@ function NW.CreateFrame()
     end)
     f:SetScript("OnEnter", function()
         GameTooltip:SetOwner(this, "ANCHOR_LEFT")
-        GameTooltip:SetText("Wirebro DDOS Lag Detector")
+        GameTooltip:SetText("Wiredbro's DDOS Lag Detector")
         GameTooltip:AddLine("Left-click + drag: move", 1, 1, 1)
         GameTooltip:AddLine("Right-click: settings", 1, 1, 1)
         GameTooltip:Show()
@@ -878,8 +885,14 @@ end
 function NW.UpdateStatusText()
     if not NW.frame then return end
 
+    -- "Likely Disconnected from server" (the full phrase used in the chat alert -
+    -- see CheckPendingPingTimeout) doesn't fit this compact top-right label at
+    -- any reasonable font size without overlapping the title, so this stays
+    -- short; the escalation still reads clearly against "Likely DC".
     local statusWord, statusColor = "Normal", "|cFF00FF7F"
-    if NW.pingMissStreak >= 5 then
+    if NW.pingMissStreak >= 20 then
+        statusWord, statusColor = "Disconnected?", "|cFFFF3333"
+    elseif NW.pingMissStreak >= 5 then
         statusWord, statusColor = "Likely DC", "|cFFFF3333"
     elseif NW.pingMissStreak >= 2 then
         statusWord, statusColor = "Degraded", "|cFFFFA500"
