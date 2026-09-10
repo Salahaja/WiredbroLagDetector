@@ -1,0 +1,7 @@
+## Interface: 11200
+## Version: 1.0.0
+## Title: Wirebro DDOS Lag Detector
+## Notes: Latency/stability monitor - flags connection spikes and stalls with a timestamped log, so you can correlate rough patches with server attacks.
+## Author: You
+## SavedVariables: NW_Log, NW_WarnThreshold, NW_SevereThreshold, NW_FramePos, NW_PingEnabled, NW_SampleInterval, NW_PingInterval, NW_RosterBroadcast
+WiredbroLagDetector.lua
