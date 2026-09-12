@@ -44,18 +44,34 @@
                  on (opt-in, needs a guild).
 
                  Also stamps each party member's ping onto their default party
-                 frame (PartyMemberFrame1-4). Vanilla's own default UI has no
-                 per-member frames for raid at all, but ShaguTweaks-extras'
-                 raid module (ShaguTweaksRaidUnitFrame1-40) fills that gap for
-                 this server's players, so raid gets the same treatment there
-                 too (see RefreshShaguRaidFrameLabels). For anyone without that
-                 addon, raid instead gets the Group Ping panel auto-opened once
-                 when you join one (and auto-closed on leaving, unless you'd
+                 frame (PartyMemberFrame1-4) - or, if pfUI is running (which
+                 hides Blizzard's own party frames entirely), onto its pfGroup0-4
+                 instead. Vanilla's own default UI has no per-member frames for
+                 raid at all, but ShaguTweaks-extras' raid module
+                 (ShaguTweaksRaidUnitFrame1-40) and pfUI's (pfRaid1-40) both fill
+                 that gap for this server's players, so raid gets the same
+                 treatment there too (see RefreshShaguRaidFrameLabels/
+                 RefreshPfuiRaidFrameLabels). For anyone with neither addon,
+                 raid instead gets the Group Ping panel auto-opened once when
+                 you join one (and auto-closed on leaving, unless you'd
                  opened/closed it yourself in the meantime - see
                  HandleGroupTransition).
 
+                 A groupmate's last known ping doesn't just sit there once
+                 they go quiet: 3 missed broadcasts in a row (~15s, see
+                 ROSTER_MISS_LIMIT) shows their value as a red "--" instead,
+                 and 5 missed in a row also fires a one-time chat warning that
+                 they've likely lagged out or disconnected (see
+                 CheckRosterMissingMembers).
+
+                 A minimap button (see CreateMinimapButton) mirrors the HUD's
+                 own left-click-toggle/right-click-settings split.
+
     Slash Commands (all equivalent - /wdld, /nw, /netwatch):
         /wdld                  toggle the on-screen monitor
+        /wdld hide             hide it explicitly (unlike the toggle, safe to
+                               put in a macro regardless of current state)
+        /wdld show             show it again
         /wdld log              print the recent spike/recovery log to chat
         /wdld clear            clear the log
         /wdld set warn 500     ms threshold for a "warn" (yellow) state
@@ -129,7 +145,10 @@ NW.pingMissStreak = 0 -- consecutive timed-out pings; gates chat alerts so one m
 -- be mistaken for a ping reply.
 NW.ROSTER_PREFIX            = "WIREDBROLAGRC"
 NW.ROSTER_BROADCAST_INTERVAL = 5   -- seconds between broadcasts, independent of the sample interval
-NW.ROSTER_STALE_AFTER       = 20   -- seconds with no update before greying an entry out
+NW.ROSTER_MISS_LIMIT        = 3    -- missed broadcast intervals (elapsed time / ROSTER_BROADCAST_INTERVAL,
+                                    -- since there's no per-member counter, just a shared fixed interval)
+                                    -- before showing red "--" instead of their last known number - mirrors
+                                    -- the same "don't trust a stale number" treatment as your own Ping line
 NW.rosterBroadcast          = true -- on by default, but actually broadcasting also needs
                                     -- pingEnabled (opt-in, needs a guild) - see BroadcastRosterStatus
 NW.rosterBroadcastTimer     = 0
@@ -415,6 +434,27 @@ function NW.HandleRosterMessage(sender, msg)
     end
     NW.RefreshPartyFrameLabels()
     NW.RefreshShaguRaidFrameLabels()
+    NW.RefreshPfuiPartyFrameLabels()
+    NW.RefreshPfuiRaidFrameLabels()
+end
+
+-- Runs every ROSTER_BROADCAST_INTERVAL tick (not just when a message arrives -
+-- a groupmate gone quiet produces no messages at all, which is exactly the
+-- case this needs to catch). data.alertedMissing gates it to fire once per
+-- miss streak rather than every tick past 5 - it's cleared for free the next
+-- time HandleRosterMessage replaces that entry with a fresh one.
+function NW.CheckRosterMissingMembers()
+    for _, name in ipairs(NW.rosterOrder) do
+        local data = NW.roster[name]
+        if data then
+            if NW.RosterMissedCount(data) >= 5 then
+                if not data.alertedMissing then
+                    data.alertedMissing = true
+                    NW.Say("|cFFFF3333" .. name .. " has missed 5+ pings in a row|r - might be lagging or disconnected.")
+                end
+            end
+        end
+    end
 end
 
 -- Drops anyone no longer in the group (left, or the group disbanded), so a
@@ -449,13 +489,17 @@ function NW.PruneRosterToGroup()
     end
 end
 
--- Shared by every per-member frame label (party, Shagu raid frames) so the
--- stale-grey/color logic only lives in one place.
+-- Shared by every per-member ping display (party/raid frame labels, the
+-- Group Ping panel) so the missed-broadcast logic only lives in one place.
+function NW.RosterMissedCount(data)
+    return math.floor((GetTime() - data.time) / NW.ROSTER_BROADCAST_INTERVAL)
+end
+
 local function FormatPingLabel(name)
     local data = name and NW.roster[name]
     if not data then return "" end
-    if (GetTime() - data.time) > NW.ROSTER_STALE_AFTER then
-        return "|cFF666666" .. data.latency .. "ms|r"
+    if NW.RosterMissedCount(data) >= NW.ROSTER_MISS_LIMIT then
+        return "|cFFFF3333--|r"
     end
     return NW.ColorFor(data.latency, NW.warnThreshold, NW.severeThreshold) .. data.latency .. "ms|r"
 end
@@ -525,19 +569,85 @@ function NW.RefreshShaguRaidFrameLabels()
     end
 end
 
+-- pfUI (modules\group.lua) replaces Blizzard's party frames entirely - it
+-- explicitly hides and neutralizes PartyMemberFrame1-4 - so RefreshPartyFrameLabels
+-- has nothing to attach to for anyone running it. pfUI names its own party
+-- buttons pfGroup0 (yourself) through pfGroup4 (party1-4), fixed to those slots
+-- (not reassigned like raid), per modules\group.lua and api\unitframes.lua's
+-- CreateUnitFrame (fname = "Group"..id for a "Party"-type frame).
+function NW.RefreshPfuiPartyFrameLabels()
+    for i = 0, 4 do
+        local frame = getglobal("pfGroup" .. i)
+        if frame then
+            local unit = frame.label and frame.id and (frame.label .. frame.id) or nil
+            local fs = frame.wdldPingText
+            if unit and unit ~= "player" and UnitExists(unit) then
+                if not fs then
+                    -- Same reasoning as the Shagu raid frames: pfUI's frames are
+                    -- densely layered with icon/glow child frames at their own
+                    -- explicit FrameLevels (up to 48), so this needs a holder
+                    -- comfortably above all of them to actually be visible.
+                    local holder = CreateFrame("Frame", nil, frame)
+                    holder:SetAllPoints(frame)
+                    holder:SetFrameLevel(200)
+                    fs = holder:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+                    fs:SetFont((fs:GetFont()), 8, "THINOUTLINE")
+                    fs:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -1, -1)
+                    fs:SetJustifyH("RIGHT")
+                    frame.wdldPingText = fs
+                end
+                fs:SetText(FormatPingLabel(UnitName(unit)))
+            elseif fs then
+                fs:SetText("")
+            end
+        end
+    end
+end
+
+-- pfUI (modules\raid.lua) names its raid buttons pfRaid1-40, and like Shagu's
+-- (and vanilla raid rosters generally) they're NOT fixed to a raid index -
+-- frame.id gets reassigned as subgroups/roster change (see that file's
+-- SetRaidIndex), so the unit ("raid"..id, from frame.label..frame.id per
+-- api\unitframes.lua's own convention used throughout that file) has to be
+-- read fresh each refresh.
+function NW.RefreshPfuiRaidFrameLabels()
+    for i = 1, 40 do
+        local frame = getglobal("pfRaid" .. i)
+        if frame then
+            local unit = frame.label and frame.id and (frame.label .. frame.id) or nil
+            local fs = frame.wdldPingText
+            if unit and UnitExists(unit) then
+                if not fs then
+                    local holder = CreateFrame("Frame", nil, frame)
+                    holder:SetAllPoints(frame)
+                    holder:SetFrameLevel(200)
+                    fs = holder:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+                    fs:SetFont((fs:GetFont()), 8, "THINOUTLINE")
+                    fs:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -1, -1)
+                    fs:SetJustifyH("RIGHT")
+                    frame.wdldPingText = fs
+                end
+                fs:SetText(FormatPingLabel(UnitName(unit)))
+            elseif fs then
+                fs:SetText("")
+            end
+        end
+    end
+end
+
 -- Vanilla's own default UI has no per-member raid frames at all to stamp ping
--- onto - but ShaguTweaks-extras' raid module (see RefreshShaguRaidFrameLabels)
--- fills that gap for anyone running it, which covers this server's players.
--- For anyone WITHOUT it, the next best thing is auto-popping the Group Ping
--- panel once per raid you join. NW.rosterAutoShown tracks whether WE opened
--- it, so if the player closes it (or opens/closes it themselves via
--- /wdld roster) we leave it alone for the rest of that raid instead of
--- yanking it back open or shut.
+-- onto - but ShaguTweaks-extras' and pfUI's raid modules (see
+-- RefreshShaguRaidFrameLabels/RefreshPfuiRaidFrameLabels) fill that gap for
+-- anyone running either, which covers this server's players. For anyone with
+-- NEITHER, the next best thing is auto-popping the Group Ping panel once per
+-- raid you join. NW.rosterAutoShown tracks whether WE opened it, so if the
+-- player closes it (or opens/closes it themselves via /wdld roster) we leave
+-- it alone for the rest of that raid instead of yanking it back open or shut.
 function NW.HandleGroupTransition()
     if GetNumRaidMembers() > 0 then
         if not NW.raidAutoShowDone then
             NW.raidAutoShowDone = true
-            if not getglobal("ShaguTweaksRaidUnitFrame1") then
+            if not getglobal("ShaguTweaksRaidUnitFrame1") and not getglobal("pfRaid1") then
                 if not NW.settingsFrame then NW.CreateSettingsFrame() end
                 if not NW.rosterFrame then NW.CreateRosterFrame() end
                 if not NW.rosterFrame:IsShown() then
@@ -557,6 +667,8 @@ function NW.HandleGroupTransition()
 
     NW.RefreshPartyFrameLabels()
     NW.RefreshShaguRaidFrameLabels()
+    NW.RefreshPfuiPartyFrameLabels()
+    NW.RefreshPfuiRaidFrameLabels()
 end
 
 -- ---------------------------------------------------------------------------------------------
@@ -700,6 +812,76 @@ function NW.CreateFrame()
     end
 
     NW.frame = f
+end
+
+-- Standard drag-around-the-minimap-edge button, positioned by angle rather
+-- than x/y so it stays glued to the ring regardless of minimap size/scale.
+-- Left-click toggles the HUD, right-click opens settings - same split as
+-- right-clicking the HUD itself, so both entry points behave the same way.
+function NW.CreateMinimapButton()
+    local btn = CreateFrame("Button", "NW_MinimapButton", Minimap)
+    btn:SetWidth(31); btn:SetHeight(31)
+    btn:SetFrameStrata("MEDIUM")
+    btn:SetFrameLevel(8)
+    btn:SetToplevel(true)
+
+    local icon = btn:CreateTexture(nil, "BACKGROUND")
+    icon:SetWidth(20); icon:SetHeight(20)
+    icon:SetPoint("CENTER", btn, "CENTER", 0, 1)
+    icon:SetTexture("Interface\\Icons\\INV_Misc_PocketWatch_01")
+    btn.icon = icon
+
+    local border = btn:CreateTexture(nil, "OVERLAY")
+    border:SetWidth(54); border:SetHeight(54)
+    border:SetPoint("TOPLEFT", btn, "TOPLEFT", 0, 0)
+    border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+
+    btn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    btn:SetScript("OnClick", function()
+        if arg1 == "RightButton" then
+            NW.ToggleSettings()
+        else
+            if not NW.frame then NW.CreateFrame() end
+            if NW.frame:IsShown() then NW.frame:Hide() else NW.frame:Show() end
+        end
+    end)
+
+    btn:SetScript("OnEnter", function()
+        GameTooltip:SetOwner(this, "ANCHOR_LEFT")
+        GameTooltip:SetText("Wiredbro's DDOS Lag Detector")
+        GameTooltip:AddLine("Left-click: show/hide the monitor", 1, 1, 1)
+        GameTooltip:AddLine("Right-click: settings", 1, 1, 1)
+        GameTooltip:AddLine("Drag: move this button", 1, 1, 1)
+        GameTooltip:Show()
+    end)
+    btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    btn:SetMovable(true)
+    btn:EnableMouse(true)
+    btn:RegisterForDrag("LeftButton")
+    btn:SetScript("OnDragStart", function() this.dragging = true end)
+    btn:SetScript("OnDragStop", function() this.dragging = false end)
+    btn:SetScript("OnUpdate", function()
+        if not this.dragging then return end
+        local mx, my = Minimap:GetCenter()
+        local px, py = GetCursorPosition()
+        local scale = Minimap:GetEffectiveScale()
+        px, py = px / scale, py / scale
+        NW.minimapAngle = math.atan2(py - my, px - mx)
+        NW.PositionMinimapButton()
+        NW_MinimapAngle = NW.minimapAngle
+    end)
+
+    NW.minimapButton = btn
+    NW.PositionMinimapButton()
+end
+
+function NW.PositionMinimapButton()
+    if not NW.minimapButton then return end
+    local angle = NW.minimapAngle or math.rad(215) -- default: bottom-left of the ring
+    local radius = 80
+    NW.minimapButton:ClearAllPoints()
+    NW.minimapButton:SetPoint("CENTER", Minimap, "CENTER", math.cos(angle) * radius, math.sin(angle) * radius)
 end
 
 -- Small helper so the sample-interval and ping-interval sliders (identical
@@ -967,12 +1149,10 @@ function NW.RefreshRosterPanel()
         if not entry then
             row:Hide()
         else
-            local stale = (GetTime() - entry.time) > NW.ROSTER_STALE_AFTER
-            if stale then
-                row.nameText:SetText("|cFF666666" .. entry.name .. "|r")
-                row.msText:SetText("|cFF666666" .. entry.latency .. "ms|r")
+            row.nameText:SetText(entry.name)
+            if NW.RosterMissedCount(entry) >= NW.ROSTER_MISS_LIMIT then
+                row.msText:SetText("|cFFFF3333--|r")
             else
-                row.nameText:SetText(entry.name)
                 row.msText:SetText(NW.ColorFor(entry.latency, NW.warnThreshold, NW.severeThreshold) .. entry.latency .. "ms|r")
             end
             row:Show()
@@ -1163,7 +1343,9 @@ ev:SetScript("OnEvent", function()
             NW.PING_INTERVAL = NW_PingInterval
         end
         if NW_RosterBroadcast ~= nil then NW.rosterBroadcast = NW_RosterBroadcast end
+        if NW_MinimapAngle then NW.minimapAngle = NW_MinimapAngle end
         NW.CreateFrame()
+        NW.CreateMinimapButton()
         NW.UpdateChatRTTDisplay()
     elseif event == "CHAT_MSG_ADDON" then
         -- arg1=prefix, arg2=message, arg3=channel, arg4=sender
@@ -1199,6 +1381,7 @@ ev:SetScript("OnUpdate", function()
     if NW.rosterBroadcastTimer >= NW.ROSTER_BROADCAST_INTERVAL then
         NW.rosterBroadcastTimer = 0
         NW.BroadcastRosterStatus()
+        NW.CheckRosterMissingMembers()
     end
 end)
 
@@ -1266,10 +1449,16 @@ SlashCmdList["NETWATCH"] = function(msg)
         end
     elseif cmd == "roster" then
         NW.ToggleRosterPanel()
+    elseif cmd == "hide" then
+        if not NW.frame then NW.CreateFrame() end
+        NW.frame:Hide()
+    elseif cmd == "show" then
+        if not NW.frame then NW.CreateFrame() end
+        NW.frame:Show()
     elseif cmd == "" then
         if not NW.frame then NW.CreateFrame() end
         if NW.frame:IsShown() then NW.frame:Hide() else NW.frame:Show() end
     else
-        NW.Say("commands: /wdld, /wdld log, /wdld clear, /wdld set warn <ms>, /wdld set severe <ms>, /wdld probe, /wdld pingtest, /wdld set ping on|off, /wdld roster, /wdld set roster on|off")
+        NW.Say("commands: /wdld, /wdld hide, /wdld show, /wdld log, /wdld clear, /wdld set warn <ms>, /wdld set severe <ms>, /wdld probe, /wdld pingtest, /wdld set ping on|off, /wdld roster, /wdld set roster on|off")
     end
 end
