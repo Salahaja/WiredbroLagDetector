@@ -32,14 +32,16 @@
                  equality check would fail even for a reply that arrived on time,
                  which looked like frequent phantom timeouts before this was fixed.
 
-                 Also broadcasts your own latency to PARTY/RAID (same addon-message
-                 mechanism, different prefix) every 5s, and listens for the same
-                 from anyone else in the group running this addon - a "Group
-                 Latency" panel shows everyone's, worst first, so you can see at a
-                 glance whether an issue is just you or everyone. On by default
-                 (opt-out, not opt-in - unlike the ping, there's no "does this even
-                 work" uncertainty here since it's the exact channel
-                 Aegis_RallyPower's sync already proves works).
+                 Also broadcasts your own round-trip ping (not GetNetStats() home
+                 latency - that's just your own link to the server and stays fine
+                 during exactly the kind of trouble this addon exists to catch) to
+                 PARTY/RAID (same addon-message mechanism, different prefix) every
+                 5s, and listens for the same from anyone else in the group running
+                 this addon - a "Group Ping" panel shows everyone's, worst first,
+                 so you can see at a glance whether an issue is just you or
+                 everyone. Sharing is on by default, but since it rides the ping
+                 there's nothing to actually send until the ping itself is turned
+                 on (opt-in, needs a guild).
 
     Slash Commands (all equivalent - /wdld, /nw, /netwatch):
         /wdld                  toggle the on-screen monitor
@@ -53,13 +55,14 @@
                                whether it worked and how long it took
         /wdld set ping on      turns on automatic background round-trip pinging
         /wdld set ping off     turns it back off (default)
-        /wdld roster           opens the Group Latency panel
-        /wdld set roster on    shares your latency with party/raid (default)
+        /wdld roster           opens the Group Ping panel
+        /wdld set roster on    shares your ping with party/raid (default - still
+                               needs the ping itself turned on to have anything to share)
         /wdld set roster off   stops sharing (you can still see others')
 
     Right-click the monitor to open settings: update interval, ping interval
     (both 0.5s-10s sliders), the ping on/off checkbox, the roster share checkbox,
-    and a button to open the Group Latency panel. Ping timeout is computed
+    and a button to open the Group Ping panel. Ping timeout is computed
     automatically, not a setting.
 --]]
 
@@ -103,19 +106,20 @@ NW.lastRTT       = nil -- ms, nil until we get at least one reply
 NW.warnedNoGuild = false -- so the "not in a guild" notice fires once, not every ping cycle
 NW.pingMissStreak = 0 -- consecutive timed-out pings; gates chat alerts so one miss doesn't spam - see CheckPendingPingTimeout
 
--- Group latency sync: broadcasts your own latency to PARTY/RAID (same
--- addon-message mechanism, proven by Aegis_RallyPower on this exact channel -
--- see Aegis_Sync.lua's RawSend). A separate prefix from the ping so a received
+-- Group latency sync: broadcasts your own round-trip ping (not home latency -
+-- see BroadcastRosterStatus for why) to PARTY/RAID (same addon-message
+-- mechanism, proven by Aegis_RallyPower on this exact channel - see
+-- Aegis_Sync.lua's RawSend). A separate prefix from the ping so a received
 -- roster broadcast (sender = someone else, or your own echoing back) can never
 -- be mistaken for a ping reply.
 NW.ROSTER_PREFIX            = "WIREDBROLAGRC"
 NW.ROSTER_BROADCAST_INTERVAL = 5   -- seconds between broadcasts, independent of the sample interval
 NW.ROSTER_STALE_AFTER       = 20   -- seconds with no update before greying an entry out
-NW.rosterBroadcast          = true -- opt-out, not opt-in: unlike the ping, there's no
-                                    -- "does this even work" uncertainty here, and it's
-                                    -- useless to everyone if it defaults off and nobody enables it
+NW.rosterBroadcast          = true -- on by default, but actually broadcasting also needs
+                                    -- pingEnabled (opt-in, needs a guild) - see BroadcastRosterStatus
 NW.rosterBroadcastTimer     = 0
-NW.lastHomeLatency          = nil  -- cached from the most recent Sample(), for the broadcast and for
+NW.warnedNoPingForRoster    = false -- so the "turn ping on to share" notice fires once, not every broadcast cycle
+NW.lastHomeLatency          = nil  -- cached from the most recent Sample(), for the HUD's Home line and for
                                     -- the first ping's timeout estimate (see ComputePingTimeout)
 NW.roster        = {}  -- [name] = { latency = ms, time = GetTime() }
 NW.rosterOrder   = {}  -- insertion-ordered names, for stable row layout
@@ -354,15 +358,28 @@ function NW.SetRosterBroadcast(enabled)
 end
 
 -- Solo: nothing to broadcast to, matching Aegis_Sync's RawSend behavior.
+-- Shares the round-trip ping, not GetNetStats()'s home latency - home latency
+-- is just your own link to the server and stays fine during exactly the kind
+-- of trouble (server-side backup, message loss) this addon exists to catch,
+-- so it told the group nothing useful. The ping is opt-in and needs a guild
+-- (see SetPingEnabled), so there's nothing to share until that's on and has
+-- produced at least one real round trip.
 function NW.BroadcastRosterStatus()
     if not NW.rosterBroadcast then return end
-    if not NW.lastHomeLatency or NW.lastHomeLatency <= 0 then return end
+    if not NW.pingEnabled or not NW.lastRTT or NW.lastRTT <= 0 then
+        if NW.pingEnabled == false and not NW.warnedNoPingForRoster then
+            NW.warnedNoPingForRoster = true
+            NW.Say("|cFFFFA500sharing your ping with the group needs the round-trip ping turned on|r - run /wdld set ping on.")
+        end
+        return
+    end
+    NW.warnedNoPingForRoster = false
 
     local me = UnitName("player")
     if GetNumRaidMembers() > 0 then
-        pcall(SendAddonMessage, NW.ROSTER_PREFIX, tostring(NW.lastHomeLatency), "RAID", me)
+        pcall(SendAddonMessage, NW.ROSTER_PREFIX, tostring(NW.lastRTT), "RAID", me)
     elseif GetNumPartyMembers() > 0 then
-        pcall(SendAddonMessage, NW.ROSTER_PREFIX, tostring(NW.lastHomeLatency), "PARTY", me)
+        pcall(SendAddonMessage, NW.ROSTER_PREFIX, tostring(NW.lastRTT), "PARTY", me)
     end
 end
 
@@ -671,13 +688,13 @@ function NW.CreateSettingsFrame()
 
     local rosterLabel = s:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     rosterLabel:SetPoint("LEFT", rosterCheck, "RIGHT", 4, 0)
-    rosterLabel:SetText("Share my latency with group")
+    rosterLabel:SetText("Share my ping with group")
     s.rosterLabel = rosterLabel
 
     local rosterBtn = CreateFrame("Button", "NW_RosterOpenBtn", s, "UIPanelButtonTemplate")
     rosterBtn:SetWidth(140); rosterBtn:SetHeight(20)
     rosterBtn:SetPoint("TOP", s, "TOP", 0, -158)
-    rosterBtn:SetText("Group Latency")
+    rosterBtn:SetText("Group Ping")
     rosterBtn:SetScript("OnClick", function() NW.ToggleRosterPanel() end)
     s.rosterBtn = rosterBtn
 
@@ -733,7 +750,7 @@ function NW.CreateRosterFrame()
 
     local title = r:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     title:SetPoint("TOP", r, "TOP", 0, -6)
-    title:SetText("Group Latency")
+    title:SetText("Group Ping")
 
     local close = CreateFrame("Button", "NW_RosterClose", r, "UIPanelCloseButton")
     close:SetPoint("TOPRIGHT", r, "TOPRIGHT", -2, -2)
@@ -1097,10 +1114,10 @@ SlashCmdList["NETWATCH"] = function(msg)
     elseif cmd == "set" and arg2 == "roster" then
         if arg3 == "on" then
             NW.SetRosterBroadcast(true)
-            NW.Say("sharing your latency with the group: |cFF00FF7Fon|r.")
+            NW.Say("sharing your ping with the group: |cFF00FF7Fon|r.")
         elseif arg3 == "off" then
             NW.SetRosterBroadcast(false)
-            NW.Say("sharing your latency with the group: |cFFFF5179off|r.")
+            NW.Say("sharing your ping with the group: |cFFFF5179off|r.")
         else
             NW.Say("usage: /wdld set roster on|off")
         end

@@ -1,6 +1,6 @@
-# Wiredbro's DDOS Lag Detector (v1.0.5)
+# Wiredbro's DDOS Lag Detector (v1.0.6)
 
-A connection-stability monitor for WoW 1.12 (vanilla) clients — tracks latency spikes and stalls, does a real round-trip ping, and optionally shares latency with your party/raid so you can tell whether a rough patch is just you or the whole server.
+A connection-stability monitor for WoW 1.12 (vanilla) clients — tracks latency spikes and stalls, does a real round-trip ping, and optionally shares that ping with your party/raid so you can tell whether a rough patch is just you or the whole server.
 
 ## Why latency, not "world" latency
 
@@ -22,10 +22,10 @@ There's also no true packet-loss percentage exposed to addons at all — that's 
 - Timeout is adaptive (2x your last real round trip, or 3x current home latency before any round trip has completed) rather than a fixed guess.
 - Reply-matching uses a small incrementing counter, not a raw timestamp — round-tripping a float with many decimal digits through `tostring()`/`tonumber()` can lose enough precision once `GetTime()` is large that an exact-equality check fails even for a reply that arrived on time, which looked like frequent phantom timeouts before this was fixed.
 
-### Group Latency sync
-- Broadcasts your own latency to PARTY/RAID (same addon-message mechanism, different prefix) every 5s, and listens for the same from anyone else in the group running this addon.
-- A "Group Latency" panel shows everyone's, worst first, so you can see at a glance whether an issue is isolated to you.
-- On by default (opt-out, not opt-in) — unlike the ping, there's no "does this even work" uncertainty here, since it's the exact PARTY/RAID addon-message channel other addons on this server (e.g. Aegis_RallyPower's sync module) already use successfully.
+### Group Ping sync
+- Broadcasts your own round-trip ping (not `GetNetStats()` home latency - that's just your own link to the server and stays normal during exactly the kind of trouble this addon exists to catch, so it told the group nothing useful) to PARTY/RAID (same addon-message mechanism, different prefix) every 5s, and listens for the same from anyone else in the group running this addon.
+- A "Group Ping" panel shows everyone's, worst first, so you can see at a glance whether an issue is isolated to you.
+- Sharing is on by default, but since it rides the round-trip ping, there's nothing to actually send until the ping itself is turned on (see above - opt-in, needs a guild).
 
 ## Slash commands
 
@@ -43,12 +43,13 @@ All equivalent: `/wdld`, `/nw`, `/netwatch`
                        whether it worked and how long it took
 /wdld set ping on      turns on automatic background round-trip pinging
 /wdld set ping off     turns it back off (default)
-/wdld roster           opens the Group Latency panel
-/wdld set roster on    shares your latency with party/raid (default)
+/wdld roster           opens the Group Ping panel
+/wdld set roster on    shares your ping with party/raid (default - still needs
+                       the ping itself turned on to have anything to share)
 /wdld set roster off   stops sharing (you can still see others')
 ```
 
-Right-click the monitor to open settings: update interval, ping interval (both 0.5s–10s sliders), the ping on/off checkbox, the roster-share checkbox, and a button to open the Group Latency panel.
+Right-click the monitor to open settings: update interval, ping interval (both 0.5s–10s sliders), the ping on/off checkbox, the roster-share checkbox, and a button to open the Group Ping panel.
 
 ## Installation
 
@@ -60,7 +61,7 @@ The client identifies an addon by its folder name, which must contain a matching
 
 ## Known limitations
 
-- **Requires a guild for the round-trip ping specifically.** The Group Latency sync (PARTY/RAID) doesn't need one.
+- **Requires a guild for the round-trip ping.** Group Ping sync (PARTY/RAID) rides that same ping, so it also needs the ping turned on and a guild - only the always-on Home latency line on the HUD needs neither.
 - **`GetNetStats()`'s exact field order isn't independently verified on every client build.** Run `/wdld probe` if the displayed numbers look wrong.
 - **Packet loss is inferred, not measured.** There's no API for a true loss percentage — latency spikes and ping timeouts are the closest available proxy.
 
