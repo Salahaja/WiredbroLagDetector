@@ -43,6 +43,17 @@
                  there's nothing to actually send until the ping itself is turned
                  on (opt-in, needs a guild).
 
+                 Also stamps each party member's ping onto their default party
+                 frame (PartyMemberFrame1-4). Vanilla's own default UI has no
+                 per-member frames for raid at all, but ShaguTweaks-extras'
+                 raid module (ShaguTweaksRaidUnitFrame1-40) fills that gap for
+                 this server's players, so raid gets the same treatment there
+                 too (see RefreshShaguRaidFrameLabels). For anyone without that
+                 addon, raid instead gets the Group Ping panel auto-opened once
+                 when you join one (and auto-closed on leaving, unless you'd
+                 opened/closed it yourself in the meantime - see
+                 HandleGroupTransition).
+
     Slash Commands (all equivalent - /wdld, /nw, /netwatch):
         /wdld                  toggle the on-screen monitor
         /wdld log              print the recent spike/recovery log to chat
@@ -99,6 +110,10 @@ NW.PING_PREFIX   = "WIREDBROLAG"
 NW.PING_INTERVAL = 1  -- seconds between automatic background pings (slider-adjustable, 0.5-10s) -
                        -- a few-byte payload, so there's no need to sit near RallyPower's 1-3s
                        -- throttle floor meant for its much larger sync messages
+NW.PING_STARTUP_DELAY = 10 -- seconds to hold off the first automatic ping after a reload/login -
+                            -- if pingEnabled was already on from a saved setting, firing right away
+                            -- adds network/CPU work on top of the reload spike everything else is
+                            -- already causing, which is exactly when you'd notice the extra lag most
 NW.pingEnabled   = false
 NW.pendingPing   = nil -- { sentAt = GetTime(), timeout = seconds, isTest = bool }
 NW.pingTimer     = 0
@@ -123,6 +138,11 @@ NW.lastHomeLatency          = nil  -- cached from the most recent Sample(), for 
                                     -- the first ping's timeout estimate (see ComputePingTimeout)
 NW.roster        = {}  -- [name] = { latency = ms, time = GetTime() }
 NW.rosterOrder   = {}  -- insertion-ordered names, for stable row layout
+NW.raidAutoShowDone = false -- so entering a raid auto-opens the Group Ping panel once per
+                             -- raid, not every roster update while it's open
+NW.rosterAutoShown  = false -- true only while the panel is open because WE opened it (not
+                             -- the player) - lets us auto-close it on leaving raid without
+                             -- yanking it away from someone who opened it themselves
 
 -- ---------------------------------------------------------------------------------------------
 -- Helpers
@@ -393,6 +413,8 @@ function NW.HandleRosterMessage(sender, msg)
     if NW.rosterFrame and NW.rosterFrame:IsShown() then
         NW.RefreshRosterPanel()
     end
+    NW.RefreshPartyFrameLabels()
+    NW.RefreshShaguRaidFrameLabels()
 end
 
 -- Drops anyone no longer in the group (left, or the group disbanded), so a
@@ -425,6 +447,116 @@ function NW.PruneRosterToGroup()
     if changed and NW.rosterFrame and NW.rosterFrame:IsShown() then
         NW.RefreshRosterPanel()
     end
+end
+
+-- Shared by every per-member frame label (party, Shagu raid frames) so the
+-- stale-grey/color logic only lives in one place.
+local function FormatPingLabel(name)
+    local data = name and NW.roster[name]
+    if not data then return "" end
+    if (GetTime() - data.time) > NW.ROSTER_STALE_AFTER then
+        return "|cFF666666" .. data.latency .. "ms|r"
+    end
+    return NW.ColorFor(data.latency, NW.warnThreshold, NW.severeThreshold) .. data.latency .. "ms|r"
+end
+
+-- Vanilla's default UI only gives per-member unit frames for PARTY
+-- (PartyMemberFrame1-4, always exist, just hidden when unused) - raid has no
+-- default per-member frames at all, that's a later-expansion feature. So this
+-- can only stamp ping onto the party frames; see RefreshShaguRaidFrameLabels
+-- and HandleGroupTransition for how raid is covered instead.
+function NW.RefreshPartyFrameLabels()
+    for i = 1, 4 do
+        local frame = getglobal("PartyMemberFrame" .. i)
+        if frame then
+            local unit = "party" .. i
+            local fs = frame.wdldPingText
+            if UnitExists(unit) then
+                if not fs then
+                    fs = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+                    fs:SetPoint("TOPLEFT", frame, "TOPLEFT", 4, 4)
+                    fs:SetJustifyH("LEFT")
+                    frame.wdldPingText = fs
+                end
+                fs:SetText(FormatPingLabel(UnitName(unit)))
+            elseif fs then
+                fs:SetText("")
+            end
+        end
+    end
+end
+
+-- ShaguTweaks-extras' raid frames (mods\raid.lua) are what this server's
+-- players actually use for raid, since vanilla's own default UI has none at
+-- all. Its unit buttons are named ShaguTweaksRaidUnitFrame1-40, but unlike
+-- PartyMemberFrameN they're NOT fixed to a raid index - frame.unitstr gets
+-- reassigned as the roster/subgroups change (see that file's CreateUnitFrame/
+-- module.enable), so it has to be read fresh each time rather than assumed
+-- from the frame's own number. No-ops harmlessly if that addon isn't
+-- installed/enabled - ShaguTweaksRaidUnitFrame1 simply won't exist.
+function NW.RefreshShaguRaidFrameLabels()
+    for i = 1, 40 do
+        local frame = getglobal("ShaguTweaksRaidUnitFrame" .. i)
+        if frame then
+            local unit = frame.unitstr
+            local fs = frame.wdldPingText
+            if unit and UnitExists(unit) then
+                if not fs then
+                    -- Can't just create the FontString straight on `frame` - its
+                    -- border/highlight decorations are separate child FRAMES with
+                    -- their own explicit FrameLevel (32/128), which render above
+                    -- anything at the button's own (lower) level regardless of
+                    -- draw layer. A dedicated holder frame above both makes sure
+                    -- the label actually shows instead of sitting hidden under them.
+                    local holder = CreateFrame("Frame", nil, frame)
+                    holder:SetAllPoints(frame)
+                    holder:SetFrameLevel(200)
+                    fs = holder:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+                    fs:SetFont((fs:GetFont()), 8, "THINOUTLINE")
+                    fs:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -1, 1)
+                    fs:SetJustifyH("RIGHT")
+                    frame.wdldPingText = fs
+                end
+                fs:SetText(FormatPingLabel(UnitName(unit)))
+            elseif fs then
+                fs:SetText("")
+            end
+        end
+    end
+end
+
+-- Vanilla's own default UI has no per-member raid frames at all to stamp ping
+-- onto - but ShaguTweaks-extras' raid module (see RefreshShaguRaidFrameLabels)
+-- fills that gap for anyone running it, which covers this server's players.
+-- For anyone WITHOUT it, the next best thing is auto-popping the Group Ping
+-- panel once per raid you join. NW.rosterAutoShown tracks whether WE opened
+-- it, so if the player closes it (or opens/closes it themselves via
+-- /wdld roster) we leave it alone for the rest of that raid instead of
+-- yanking it back open or shut.
+function NW.HandleGroupTransition()
+    if GetNumRaidMembers() > 0 then
+        if not NW.raidAutoShowDone then
+            NW.raidAutoShowDone = true
+            if not getglobal("ShaguTweaksRaidUnitFrame1") then
+                if not NW.settingsFrame then NW.CreateSettingsFrame() end
+                if not NW.rosterFrame then NW.CreateRosterFrame() end
+                if not NW.rosterFrame:IsShown() then
+                    NW.RefreshRosterPanel()
+                    NW.rosterFrame:Show()
+                    NW.rosterAutoShown = true
+                end
+            end
+        end
+    else
+        NW.raidAutoShowDone = false
+        if NW.rosterAutoShown and NW.rosterFrame and NW.rosterFrame:IsShown() then
+            NW.rosterFrame:Hide()
+        end
+        NW.rosterAutoShown = false
+    end
+
+    NW.RefreshPartyFrameLabels()
+    NW.RefreshShaguRaidFrameLabels()
 end
 
 -- ---------------------------------------------------------------------------------------------
@@ -754,7 +886,10 @@ function NW.CreateRosterFrame()
 
     local close = CreateFrame("Button", "NW_RosterClose", r, "UIPanelCloseButton")
     close:SetPoint("TOPRIGHT", r, "TOPRIGHT", -2, -2)
-    close:SetScript("OnClick", function() r:Hide() end)
+    close:SetScript("OnClick", function()
+        NW.rosterAutoShown = false -- player closed it themselves, don't treat as our auto-show anymore
+        r:Hide()
+    end)
 
     r.rows = {}
     for i = 1, NW.ROSTER_PAGE_SIZE do
@@ -848,6 +983,7 @@ end
 function NW.ToggleRosterPanel()
     if not NW.settingsFrame then NW.CreateSettingsFrame() end
     if not NW.rosterFrame then NW.CreateRosterFrame() end
+    NW.rosterAutoShown = false -- the player is driving this now, not our raid auto-show/hide
     if NW.rosterFrame:IsShown() then
         NW.rosterFrame:Hide()
     else
@@ -1014,6 +1150,12 @@ ev:SetScript("OnEvent", function()
         NW.warnThreshold = NW_WarnThreshold or NW.warnThreshold
         NW.severeThreshold = NW_SevereThreshold or NW.severeThreshold
         if NW_PingEnabled ~= nil then NW.pingEnabled = NW_PingEnabled end
+        if NW.pingEnabled then
+            -- Coming back from a saved "on" state, not a fresh manual enable -
+            -- see PING_STARTUP_DELAY. SetPingEnabled's own "fire almost
+            -- immediately" behavior is untouched for an explicit /wdld set ping on.
+            NW.pingTimer = -NW.PING_STARTUP_DELAY
+        end
         if NW_SampleInterval and NW_SampleInterval >= 0.5 and NW_SampleInterval <= 10 then
             NW.SAMPLE_INTERVAL = NW_SampleInterval
         end
@@ -1032,6 +1174,7 @@ ev:SetScript("OnEvent", function()
         end
     elseif event == "PARTY_MEMBERS_CHANGED" or event == "RAID_ROSTER_UPDATE" then
         NW.PruneRosterToGroup()
+        NW.HandleGroupTransition()
     end
 end)
 

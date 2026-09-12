@@ -1,4 +1,4 @@
-# Wiredbro's DDOS Lag Detector (v1.0.6)
+# Wiredbro's DDOS Lag Detector (v1.0.7)
 
 A connection-stability monitor for WoW 1.12 (vanilla) clients — tracks latency spikes and stalls, does a real round-trip ping, and optionally shares that ping with your party/raid so you can tell whether a rough patch is just you or the whole server.
 
@@ -26,6 +26,8 @@ There's also no true packet-loss percentage exposed to addons at all — that's 
 - Broadcasts your own round-trip ping (not `GetNetStats()` home latency - that's just your own link to the server and stays normal during exactly the kind of trouble this addon exists to catch, so it told the group nothing useful) to PARTY/RAID (same addon-message mechanism, different prefix) every 5s, and listens for the same from anyone else in the group running this addon.
 - A "Group Ping" panel shows everyone's, worst first, so you can see at a glance whether an issue is isolated to you.
 - Sharing is on by default, but since it rides the round-trip ping, there's nothing to actually send until the ping itself is turned on (see above - opt-in, needs a guild).
+- **In a party**, each member's ping is stamped directly onto their default party frame (`PartyMemberFrame1`-`4`) - no panel needed.
+- **In a raid**, vanilla's own default UI has no per-member frames to stamp onto at all (that's a later-expansion feature) - but if you're running [ShaguTweaks-extras](https://github.com/shagu/ShaguTweaks-extras)' raid frames module, ping gets stamped onto those the same way. Without that addon, the Group Ping panel auto-opens once when you join a raid instead, and auto-closes when you leave it - unless you opened or closed it yourself in the meantime, in which case it leaves your choice alone for the rest of that raid.
 
 ## Slash commands
 
