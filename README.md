@@ -75,7 +75,7 @@ The default spot for each ping label is a best guess, and it can land somewhere 
 Vanilla predates `RegisterAddonMessagePrefix` (added in a later expansion to cut down on spam), so `CHAT_MSG_ADDON` fires for every addon's messages here, not just ones this addon recognizes. That means a groupmate's own boss mod, threat meter, or other chatty addon firing at all is visible as evidence their client is still alive - a free "still around" signal for someone who doesn't have WDLD themselves.
 
 Turn it on with "Detect activity (beta)" in settings. It only ever fills in where there's no real ping number, showing `active` in green instead of a blank space. Two things worth knowing:
-- It mostly needs **combat** to see anything - boss mods and threat meters are the chattiest sources, and they're quiet outside a fight.
+- It mostly needs **combat** to see anything - boss mods and threat meters are the chattiest sources, and they're quiet outside a fight. Seeing nothing while everyone's just standing around is expected, not broken.
 - It's **not proof of good latency**, just that something of theirs got through recently. A laggy client can still eventually deliver a queued message late.
 
 Treat it as "at least they weren't fully disconnected as of a moment ago," not a real measurement.
