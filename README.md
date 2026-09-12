@@ -1,4 +1,4 @@
-# Wiredbro's DDOS Lag Detector (v1.0.8)
+# Wiredbro's DDOS Lag Detector (v1.0.9)
 
 A connection-stability monitor for WoW 1.12 (vanilla) clients — tracks latency spikes and stalls, does a real round-trip ping, and optionally shares that ping with your party/raid so you can tell whether a rough patch is just you or the whole server.
 
@@ -62,9 +62,13 @@ All equivalent: `/wdld`, `/nw`, `/netwatch`
 /wdld set roster off   stops sharing (you can still see others')
 ```
 
-Right-click the monitor to open settings: update interval, ping interval (both 0.5s–10s sliders), the ping on/off checkbox, the roster-share checkbox, and a button to open the Group Ping panel.
+Right-click the monitor to open settings: update interval, ping interval (both 0.5s–10s sliders), the ping on/off checkbox, the roster-share checkbox, an "Unlock ping label position" checkbox (see below), and a button to open the Group Ping panel.
 
 A minimap button (drag it around the ring to reposition) gives the same two actions without a slash command: left-click shows/hides the monitor, right-click opens settings.
+
+### Repositioning the ping labels
+
+The default spot for each ping label is a best guess, and it can land somewhere awkward depending on which unit-frame addon you run and how it's sized or skinned (see the ShaguTweaks/pfUI raid frame notes above - both needed real tweaking to look right). Rather than guess forever, check "Unlock ping label position" in settings: every label gets a visible border and becomes draggable. Drag any one of them to where you want it, then uncheck the box to lock it back down. The nudge you make is shared across every label (party, raid, whichever addon) and saved, so you only have to do it once.
 
 ## Installation
 

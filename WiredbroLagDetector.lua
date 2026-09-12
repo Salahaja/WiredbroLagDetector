@@ -67,6 +67,14 @@
                  A minimap button (see CreateMinimapButton) mirrors the HUD's
                  own left-click-toggle/right-click-settings split.
 
+                 Every ping label's default position can be off depending on
+                 which unit-frame addon (if any) someone runs and how they've
+                 sized/skinned it - "Unlock ping label position" in settings
+                 makes every label draggable (with a visible border while
+                 unlocked) so it can be nudged into a clear spot; the nudge is
+                 shared across all of them and saved (see CreatePingLabel /
+                 SetPingLabelsUnlocked).
+
     Slash Commands (all equivalent - /wdld, /nw, /netwatch):
         /wdld                  toggle the on-screen monitor
         /wdld hide             hide it explicitly (unlike the toggle, safe to
@@ -504,6 +512,83 @@ local function FormatPingLabel(name)
     return NW.ColorFor(data.latency, NW.warnThreshold, NW.severeThreshold) .. data.latency .. "ms|r"
 end
 
+-- Every ping label (across every unit-frame addon this file supports) lives
+-- in this list so the unlock/drag/offset system below can act on all of them
+-- at once, regardless of which addon actually created the underlying frame.
+NW.pingLabelHolders   = {}
+NW.pingLabelsUnlocked = false -- edit mode - not persisted, always starts locked after a reload
+NW.pingLabelOffsetX   = 0     -- shared nudge applied on top of every label's own default position -
+NW.pingLabelOffsetY   = 0     -- see settings: "Unlock ping label position"
+
+-- Builds one ping label consistently: a small holder frame (needed both for
+-- FrameLevel elevation on the densely-layered addons, and now for drag
+-- support) plus the FontString itself. basePoint/baseRelPoint/baseX/baseY is
+-- that label's own default position for this frame type - the shared offset
+-- is added on top of it, never replaces it, so unlocking and dragging never
+-- loses track of a sane fallback position.
+local function CreatePingLabel(frame, basePoint, baseRelPoint, baseX, baseY, justify, tinyFont)
+    local holder = CreateFrame("Frame", nil, frame)
+    holder:SetWidth(60); holder:SetHeight(14)
+    holder:SetFrameLevel(200)
+    holder:SetBackdrop({
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border", tile = true, tileSize = 8, edgeSize = 8
+    })
+    holder:SetBackdropBorderColor(1, 0.82, 0, 0) -- invisible until unlocked - see SetPingLabelsUnlocked
+    holder.basePoint, holder.baseRelPoint, holder.baseX, holder.baseY = basePoint, baseRelPoint, baseX, baseY
+
+    local fs = holder:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    if tinyFont then fs:SetFont((fs:GetFont()), 8, "THINOUTLINE") end
+    fs:SetAllPoints(holder)
+    fs:SetJustifyH(justify)
+    holder.text = fs
+
+    holder:SetMovable(true)
+    holder:RegisterForDrag("LeftButton")
+    holder:SetScript("OnDragStart", function()
+        if NW.pingLabelsUnlocked then this:StartMoving() end
+    end)
+    holder:SetScript("OnDragStop", function()
+        this:StopMovingOrSizing()
+        local _, _, _, x, y = this:GetPoint()
+        NW.pingLabelOffsetX = x - this.baseX
+        NW.pingLabelOffsetY = y - this.baseY
+        NW_PingLabelOffsetX = NW.pingLabelOffsetX
+        NW_PingLabelOffsetY = NW.pingLabelOffsetY
+        NW.RepositionPingLabels() -- snap every other label to match, and re-square this one exactly
+    end)
+
+    table.insert(NW.pingLabelHolders, holder)
+    NW.RepositionPingLabel(holder)
+    return holder
+end
+
+function NW.RepositionPingLabel(holder)
+    holder:ClearAllPoints()
+    holder:SetPoint(holder.basePoint, holder:GetParent(), holder.baseRelPoint,
+        holder.baseX + NW.pingLabelOffsetX, holder.baseY + NW.pingLabelOffsetY)
+end
+
+function NW.RepositionPingLabels()
+    for _, holder in ipairs(NW.pingLabelHolders) do
+        NW.RepositionPingLabel(holder)
+    end
+end
+
+-- Toggled from settings: while unlocked, every label becomes draggable (with
+-- a visible border so there's something to actually grab) instead of passing
+-- clicks through to the unit frame underneath.
+function NW.SetPingLabelsUnlocked(unlocked)
+    NW.pingLabelsUnlocked = unlocked
+    for _, holder in ipairs(NW.pingLabelHolders) do
+        holder:EnableMouse(unlocked)
+        if unlocked then
+            holder:SetBackdropBorderColor(1, 0.82, 0, 1)
+        else
+            holder:SetBackdropBorderColor(1, 0.82, 0, 0)
+        end
+    end
+end
+
 -- Vanilla's default UI only gives per-member unit frames for PARTY
 -- (PartyMemberFrame1-4, always exist, just hidden when unused) - raid has no
 -- default per-member frames at all, that's a later-expansion feature. So this
@@ -514,17 +599,15 @@ function NW.RefreshPartyFrameLabels()
         local frame = getglobal("PartyMemberFrame" .. i)
         if frame then
             local unit = "party" .. i
-            local fs = frame.wdldPingText
+            local holder = frame.wdldPingHolder
             if UnitExists(unit) then
-                if not fs then
-                    fs = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-                    fs:SetPoint("TOPLEFT", frame, "TOPLEFT", 4, 4)
-                    fs:SetJustifyH("LEFT")
-                    frame.wdldPingText = fs
+                if not holder then
+                    holder = CreatePingLabel(frame, "TOPLEFT", "TOPLEFT", 4, 4, "LEFT", false)
+                    frame.wdldPingHolder = holder
                 end
-                fs:SetText(FormatPingLabel(UnitName(unit)))
-            elseif fs then
-                fs:SetText("")
+                holder.text:SetText(FormatPingLabel(UnitName(unit)))
+            elseif holder then
+                holder.text:SetText("")
             end
         end
     end
@@ -543,27 +626,22 @@ function NW.RefreshShaguRaidFrameLabels()
         local frame = getglobal("ShaguTweaksRaidUnitFrame" .. i)
         if frame then
             local unit = frame.unitstr
-            local fs = frame.wdldPingText
+            local holder = frame.wdldPingHolder
             if unit and UnitExists(unit) then
-                if not fs then
+                if not holder then
                     -- Can't just create the FontString straight on `frame` - its
                     -- border/highlight decorations are separate child FRAMES with
                     -- their own explicit FrameLevel (32/128), which render above
                     -- anything at the button's own (lower) level regardless of
-                    -- draw layer. A dedicated holder frame above both makes sure
-                    -- the label actually shows instead of sitting hidden under them.
-                    local holder = CreateFrame("Frame", nil, frame)
-                    holder:SetAllPoints(frame)
-                    holder:SetFrameLevel(200)
-                    fs = holder:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-                    fs:SetFont((fs:GetFont()), 8, "THINOUTLINE")
-                    fs:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -1, 1)
-                    fs:SetJustifyH("RIGHT")
-                    frame.wdldPingText = fs
+                    -- draw layer. CreatePingLabel's holder (elevated to 200) is
+                    -- what makes the label actually visible instead of hidden
+                    -- underneath them.
+                    holder = CreatePingLabel(frame, "BOTTOMRIGHT", "BOTTOMRIGHT", -1, 1, "RIGHT", true)
+                    frame.wdldPingHolder = holder
                 end
-                fs:SetText(FormatPingLabel(UnitName(unit)))
-            elseif fs then
-                fs:SetText("")
+                holder.text:SetText(FormatPingLabel(UnitName(unit)))
+            elseif holder then
+                holder.text:SetText("")
             end
         end
     end
@@ -580,25 +658,20 @@ function NW.RefreshPfuiPartyFrameLabels()
         local frame = getglobal("pfGroup" .. i)
         if frame then
             local unit = frame.label and frame.id and (frame.label .. frame.id) or nil
-            local fs = frame.wdldPingText
+            local holder = frame.wdldPingHolder
             if unit and unit ~= "player" and UnitExists(unit) then
-                if not fs then
+                if not holder then
                     -- Same reasoning as the Shagu raid frames: pfUI's frames are
                     -- densely layered with icon/glow child frames at their own
-                    -- explicit FrameLevels (up to 48), so this needs a holder
-                    -- comfortably above all of them to actually be visible.
-                    local holder = CreateFrame("Frame", nil, frame)
-                    holder:SetAllPoints(frame)
-                    holder:SetFrameLevel(200)
-                    fs = holder:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-                    fs:SetFont((fs:GetFont()), 8, "THINOUTLINE")
-                    fs:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -1, -1)
-                    fs:SetJustifyH("RIGHT")
-                    frame.wdldPingText = fs
+                    -- explicit FrameLevels (up to 48). Floated above the frame's
+                    -- top edge entirely (rather than tucked in a corner) since
+                    -- party frames here have generous vertical spacing (75px).
+                    holder = CreatePingLabel(frame, "BOTTOMRIGHT", "TOPRIGHT", -1, 4, "RIGHT", true)
+                    frame.wdldPingHolder = holder
                 end
-                fs:SetText(FormatPingLabel(UnitName(unit)))
-            elseif fs then
-                fs:SetText("")
+                holder.text:SetText(FormatPingLabel(UnitName(unit)))
+            elseif holder then
+                holder.text:SetText("")
             end
         end
     end
@@ -615,21 +688,21 @@ function NW.RefreshPfuiRaidFrameLabels()
         local frame = getglobal("pfRaid" .. i)
         if frame then
             local unit = frame.label and frame.id and (frame.label .. frame.id) or nil
-            local fs = frame.wdldPingText
+            local holder = frame.wdldPingHolder
             if unit and UnitExists(unit) then
-                if not fs then
-                    local holder = CreateFrame("Frame", nil, frame)
-                    holder:SetAllPoints(frame)
-                    holder:SetFrameLevel(200)
-                    fs = holder:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-                    fs:SetFont((fs:GetFont()), 8, "THINOUTLINE")
-                    fs:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -1, -1)
-                    fs:SetJustifyH("RIGHT")
-                    frame.wdldPingText = fs
+                if not holder then
+                    -- Raised above the frame's top edge rather than tucked in the
+                    -- corner - it was sitting right on the border art and getting
+                    -- visually clipped by it. Kept modest (not a full float-above
+                    -- like the party version): raid.lua stacks these only 1px
+                    -- apart vertically, so going too far risks overlapping the
+                    -- frame above it in a dense raid instead.
+                    holder = CreatePingLabel(frame, "TOPRIGHT", "TOPRIGHT", -1, 4, "RIGHT", true)
+                    frame.wdldPingHolder = holder
                 end
-                fs:SetText(FormatPingLabel(UnitName(unit)))
-            elseif fs then
-                fs:SetText("")
+                holder.text:SetText(FormatPingLabel(UnitName(unit)))
+            elseif holder then
+                holder.text:SetText("")
             end
         end
     end
@@ -936,7 +1009,7 @@ end
 
 function NW.CreateSettingsFrame()
     local s = CreateFrame("Frame", "NW_SettingsFrame", UIParent)
-    s:SetWidth(200); s:SetHeight(220)
+    s:SetWidth(200); s:SetHeight(244)
     s:SetBackdrop({
         bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
         edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
@@ -952,7 +1025,7 @@ function NW.CreateSettingsFrame()
     MakeMovable(s, "NW_SettingsPos", function()
         s:ClearAllPoints()
         local roomBelow = (NW.frame:GetBottom() or 0) - 6
-        if roomBelow >= 220 then
+        if roomBelow >= 244 then
             s:SetPoint("TOP", NW.frame, "BOTTOM", 0, -6)
         else
             s:SetPoint("BOTTOM", NW.frame, "TOP", 0, 6)
@@ -1012,6 +1085,20 @@ function NW.CreateSettingsFrame()
     rosterBtn:SetScript("OnClick", function() NW.ToggleRosterPanel() end)
     s.rosterBtn = rosterBtn
 
+    local unlockCheck = CreateFrame("CheckButton", "NW_UnlockPingLabelsCheck", s, "UICheckButtonTemplate")
+    unlockCheck:SetWidth(20); unlockCheck:SetHeight(20)
+    unlockCheck:SetPoint("TOPLEFT", s, "TOPLEFT", 14, -190)
+    unlockCheck:SetChecked(NW.pingLabelsUnlocked)
+    unlockCheck:SetScript("OnClick", function()
+        NW.SetPingLabelsUnlocked(this:GetChecked() and true or false)
+    end)
+    s.unlockCheck = unlockCheck
+
+    local unlockLabel = s:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    unlockLabel:SetPoint("LEFT", unlockCheck, "RIGHT", 4, 0)
+    unlockLabel:SetText("Unlock ping label position")
+    s.unlockLabel = unlockLabel
+
     NW.settingsFrame = s
 end
 
@@ -1024,6 +1111,7 @@ function NW.ToggleSettings()
         NW.settingsFrame.pingCheck:SetChecked(NW.pingEnabled)
         NW.settingsFrame.pingIntervalSlider:SetValue(NW.PING_INTERVAL)
         NW.settingsFrame.rosterCheck:SetChecked(NW.rosterBroadcast)
+        NW.settingsFrame.unlockCheck:SetChecked(NW.pingLabelsUnlocked)
         NW.settingsFrame:Show()
     end
 end
@@ -1343,6 +1431,8 @@ ev:SetScript("OnEvent", function()
             NW.PING_INTERVAL = NW_PingInterval
         end
         if NW_RosterBroadcast ~= nil then NW.rosterBroadcast = NW_RosterBroadcast end
+        if NW_PingLabelOffsetX then NW.pingLabelOffsetX = NW_PingLabelOffsetX end
+        if NW_PingLabelOffsetY then NW.pingLabelOffsetY = NW_PingLabelOffsetY end
         if NW_MinimapAngle then NW.minimapAngle = NW_MinimapAngle end
         NW.CreateFrame()
         NW.CreateMinimapButton()
