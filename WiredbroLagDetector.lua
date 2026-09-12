@@ -70,10 +70,23 @@
                  Every ping label's default position can be off depending on
                  which unit-frame addon (if any) someone runs and how they've
                  sized/skinned it - "Unlock ping label position" in settings
-                 makes every label draggable (with a visible border while
-                 unlocked) so it can be nudged into a clear spot; the nudge is
-                 shared across all of them and saved (see CreatePingLabel /
-                 SetPingLabelsUnlocked).
+                 makes every label draggable (with a visible border, and a
+                 mouseover tooltip naming whose label it is - handy in a
+                 packed raid grid) so it can be nudged into a clear spot; the
+                 nudge is shared across all of them and saved, since dragging
+                 is meant as a one-time whole-addon fix, not a per-member
+                 layout tool (see CreatePingLabel / SetPingLabelsUnlocked). A
+                 "Reset Label Position" button clears it back to 0,0.
+
+                 BETA: "Detect activity (beta)" in settings turns on
+                 NW.RecordPassiveActivity - vanilla predates
+                 RegisterAddonMessagePrefix, so CHAT_MSG_ADDON fires for every
+                 addon's messages, not just this one's, meaning a groupmate's
+                 OWN boss mod/threat meter/etc. firing at all is visible as a
+                 "still around" signal even if they don't have WDLD. Only
+                 fills in where there's no real ping number (see
+                 FormatPingLabel), off by default, and not proof of good
+                 latency - just that something of theirs got through recently.
 
     Slash Commands (all equivalent - /wdld, /nw, /netwatch):
         /wdld                  toggle the on-screen monitor
@@ -170,6 +183,19 @@ NW.raidAutoShowDone = false -- so entering a raid auto-opens the Group Ping pane
 NW.rosterAutoShown  = false -- true only while the panel is open because WE opened it (not
                              -- the player) - lets us auto-close it on leaving raid without
                              -- yanking it away from someone who opened it themselves
+
+-- BETA: vanilla 1.12 predates RegisterAddonMessagePrefix (added in a later
+-- expansion to cut down on spam), so CHAT_MSG_ADDON fires for every addon
+-- message from anyone in range, on any prefix, not just ones this addon
+-- knows about. That means a groupmate's OWN boss mod, threat meter, raid
+-- sync addon etc. firing at all is visible to us as evidence their client is
+-- alive - a free "still around" signal for people who don't have WDLD
+-- themselves. It only ever fills in where there's no real ping number (see
+-- FormatPingLabel) and it's not proof of good latency, just that something
+-- of theirs got through recently - see RecordPassiveActivity.
+NW.passiveActivity        = {} -- [name] = GetTime() of the last addon message seen from them, any prefix
+NW.passiveActivityEnabled = false
+NW.PASSIVE_ACTIVITY_STALE_AFTER = 30 -- seconds before we stop treating them as recently active
 
 -- ---------------------------------------------------------------------------------------------
 -- Helpers
@@ -497,6 +523,50 @@ function NW.PruneRosterToGroup()
     end
 end
 
+local function IsInMyGroup(name)
+    local n = GetNumRaidMembers()
+    if n > 0 then
+        for i = 1, n do
+            if UnitName("raid" .. i) == name then return true end
+        end
+        return false
+    end
+    local p = GetNumPartyMembers()
+    for i = 1, p do
+        if UnitName("party" .. i) == name then return true end
+    end
+    return false
+end
+
+-- BETA - see the header note on NW.passiveActivity. Fires for every addon
+-- message seen from a groupmate, any prefix, so this can get called a lot
+-- during combat (threat meters, boss mods etc. can all fire several times a
+-- second) - the display-refresh side of it is debounced to once a second per
+-- person so that traffic doesn't turn into 40-frame refresh spam.
+function NW.RecordPassiveActivity(name)
+    if not name or name == UnitName("player") then return end
+    if NW.roster[name] then return end -- real WDLD ping data already covers them
+    if not IsInMyGroup(name) then return end
+
+    local last = NW.passiveActivity[name]
+    NW.passiveActivity[name] = GetTime()
+    if last and (GetTime() - last) < 1 then return end
+
+    NW.RefreshPartyFrameLabels()
+    NW.RefreshShaguRaidFrameLabels()
+    NW.RefreshPfuiPartyFrameLabels()
+    NW.RefreshPfuiRaidFrameLabels()
+end
+
+function NW.SetPassiveActivityDetection(enabled)
+    NW.passiveActivityEnabled = enabled
+    NW_PassiveActivity = enabled
+    if not enabled then NW.passiveActivity = {} end
+    if NW.settingsFrame and NW.settingsFrame.passiveCheck then
+        NW.settingsFrame.passiveCheck:SetChecked(enabled)
+    end
+end
+
 -- Shared by every per-member ping display (party/raid frame labels, the
 -- Group Ping panel) so the missed-broadcast logic only lives in one place.
 function NW.RosterMissedCount(data)
@@ -505,11 +575,25 @@ end
 
 local function FormatPingLabel(name)
     local data = name and NW.roster[name]
-    if not data then return "" end
-    if NW.RosterMissedCount(data) >= NW.ROSTER_MISS_LIMIT then
-        return "|cFFFF3333--|r"
+    if data then
+        if NW.RosterMissedCount(data) >= NW.ROSTER_MISS_LIMIT then
+            return "|cFFFF3333--|r"
+        end
+        return NW.ColorFor(data.latency, NW.warnThreshold, NW.severeThreshold) .. data.latency .. "ms|r"
     end
-    return NW.ColorFor(data.latency, NW.warnThreshold, NW.severeThreshold) .. data.latency .. "ms|r"
+
+    -- BETA fallback: no real ping number for them (no WDLD, or they haven't
+    -- turned their own ping on), but something of theirs got through
+    -- recently - see NW.passiveActivity. Deliberately NOT a color/threshold
+    -- like a real ping, since it isn't measuring the same thing.
+    if NW.passiveActivityEnabled and name then
+        local seen = NW.passiveActivity[name]
+        if seen and (GetTime() - seen) <= NW.PASSIVE_ACTIVITY_STALE_AFTER then
+            return "|cFF00FF7Factive|r"
+        end
+    end
+
+    return ""
 end
 
 -- Every ping label (across every unit-frame addon this file supports) lives
@@ -542,19 +626,45 @@ local function CreatePingLabel(frame, basePoint, baseRelPoint, baseX, baseY, jus
     fs:SetJustifyH(justify)
     holder.text = fs
 
+    -- Only shown while unlocked - with up to 40 tiny, densely-packed raid
+    -- labels, it's not always obvious which one belongs to who while you're
+    -- repositioning them. holder.memberName is kept current by whichever
+    -- Refresh*FrameLabels function owns this label.
+    holder:SetScript("OnEnter", function()
+        if not NW.pingLabelsUnlocked then return end
+        GameTooltip:SetOwner(this, "ANCHOR_TOP")
+        GameTooltip:SetText(this.memberName or "(empty)")
+        GameTooltip:Show()
+    end)
+    holder:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
     holder:SetMovable(true)
     holder:RegisterForDrag("LeftButton")
     holder:SetScript("OnDragStart", function()
-        if NW.pingLabelsUnlocked then this:StartMoving() end
+        if not NW.pingLabelsUnlocked then return end
+        this:StartMoving()
+        -- StartMoving()/StopMovingOrSizing() re-anchors the frame relative to
+        -- UIParent in screen-absolute pixels, discarding its original
+        -- frame-relative anchor - so GetPoint() after the drag can't be
+        -- compared against this holder's tiny frame-relative baseX/baseY
+        -- (that produced a huge bogus offset, moving everything ~1/10 of the
+        -- screen). Tracking the actual cursor movement instead and adding
+        -- that delta to whatever the offset already was keeps everything in
+        -- the same, small, frame-relative coordinate space.
+        this.dragStartCursorX, this.dragStartCursorY = GetCursorPosition()
+        this.dragStartOffsetX, this.dragStartOffsetY = NW.pingLabelOffsetX, NW.pingLabelOffsetY
     end)
     holder:SetScript("OnDragStop", function()
         this:StopMovingOrSizing()
-        local _, _, _, x, y = this:GetPoint()
-        NW.pingLabelOffsetX = x - this.baseX
-        NW.pingLabelOffsetY = y - this.baseY
-        NW_PingLabelOffsetX = NW.pingLabelOffsetX
-        NW_PingLabelOffsetY = NW.pingLabelOffsetY
-        NW.RepositionPingLabels() -- snap every other label to match, and re-square this one exactly
+        if this.dragStartCursorX then
+            local px, py = GetCursorPosition()
+            local scale = this:GetEffectiveScale()
+            NW.pingLabelOffsetX = this.dragStartOffsetX + (px - this.dragStartCursorX) / scale
+            NW.pingLabelOffsetY = this.dragStartOffsetY + (py - this.dragStartCursorY) / scale
+            NW_PingLabelOffsetX = NW.pingLabelOffsetX
+            NW_PingLabelOffsetY = NW.pingLabelOffsetY
+        end
+        NW.RepositionPingLabels() -- re-anchor every label (including this one) using the corrected offset
     end)
 
     table.insert(NW.pingLabelHolders, holder)
@@ -605,8 +715,11 @@ function NW.RefreshPartyFrameLabels()
                     holder = CreatePingLabel(frame, "TOPLEFT", "TOPLEFT", 4, 4, "LEFT", false)
                     frame.wdldPingHolder = holder
                 end
-                holder.text:SetText(FormatPingLabel(UnitName(unit)))
+                local name = UnitName(unit)
+                holder.memberName = name
+                holder.text:SetText(FormatPingLabel(name))
             elseif holder then
+                holder.memberName = nil
                 holder.text:SetText("")
             end
         end
@@ -639,8 +752,11 @@ function NW.RefreshShaguRaidFrameLabels()
                     holder = CreatePingLabel(frame, "BOTTOMRIGHT", "BOTTOMRIGHT", -1, 1, "RIGHT", true)
                     frame.wdldPingHolder = holder
                 end
-                holder.text:SetText(FormatPingLabel(UnitName(unit)))
+                local name = UnitName(unit)
+                holder.memberName = name
+                holder.text:SetText(FormatPingLabel(name))
             elseif holder then
+                holder.memberName = nil
                 holder.text:SetText("")
             end
         end
@@ -669,8 +785,11 @@ function NW.RefreshPfuiPartyFrameLabels()
                     holder = CreatePingLabel(frame, "BOTTOMRIGHT", "TOPRIGHT", -1, 4, "RIGHT", true)
                     frame.wdldPingHolder = holder
                 end
-                holder.text:SetText(FormatPingLabel(UnitName(unit)))
+                local name = UnitName(unit)
+                holder.memberName = name
+                holder.text:SetText(FormatPingLabel(name))
             elseif holder then
+                holder.memberName = nil
                 holder.text:SetText("")
             end
         end
@@ -700,8 +819,11 @@ function NW.RefreshPfuiRaidFrameLabels()
                     holder = CreatePingLabel(frame, "TOPRIGHT", "TOPRIGHT", -1, 4, "RIGHT", true)
                     frame.wdldPingHolder = holder
                 end
-                holder.text:SetText(FormatPingLabel(UnitName(unit)))
+                local name = UnitName(unit)
+                holder.memberName = name
+                holder.text:SetText(FormatPingLabel(name))
             elseif holder then
+                holder.memberName = nil
                 holder.text:SetText("")
             end
         end
@@ -1009,7 +1131,7 @@ end
 
 function NW.CreateSettingsFrame()
     local s = CreateFrame("Frame", "NW_SettingsFrame", UIParent)
-    s:SetWidth(200); s:SetHeight(244)
+    s:SetWidth(200); s:SetHeight(292)
     s:SetBackdrop({
         bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
         edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
@@ -1025,7 +1147,7 @@ function NW.CreateSettingsFrame()
     MakeMovable(s, "NW_SettingsPos", function()
         s:ClearAllPoints()
         local roomBelow = (NW.frame:GetBottom() or 0) - 6
-        if roomBelow >= 244 then
+        if roomBelow >= 292 then
             s:SetPoint("TOP", NW.frame, "BOTTOM", 0, -6)
         else
             s:SetPoint("BOTTOM", NW.frame, "TOP", 0, 6)
@@ -1099,6 +1221,45 @@ function NW.CreateSettingsFrame()
     unlockLabel:SetText("Unlock ping label position")
     s.unlockLabel = unlockLabel
 
+    local resetBtn = CreateFrame("Button", "NW_ResetPingLabelsBtn", s, "UIPanelButtonTemplate")
+    resetBtn:SetWidth(140); resetBtn:SetHeight(18)
+    resetBtn:SetPoint("TOP", s, "TOP", 0, -216)
+    resetBtn:SetText("Reset Label Position")
+    resetBtn:SetScript("OnClick", function()
+        NW.pingLabelOffsetX, NW.pingLabelOffsetY = 0, 0
+        NW_PingLabelOffsetX, NW_PingLabelOffsetY = 0, 0
+        NW.RepositionPingLabels()
+        NW.Say("ping label position reset to default.")
+    end)
+    s.resetBtn = resetBtn
+
+    local passiveCheck = CreateFrame("CheckButton", "NW_PassiveActivityCheck", s, "UICheckButtonTemplate")
+    passiveCheck:SetWidth(20); passiveCheck:SetHeight(20)
+    passiveCheck:SetPoint("TOPLEFT", s, "TOPLEFT", 14, -244)
+    passiveCheck:SetChecked(NW.passiveActivityEnabled)
+    passiveCheck:SetScript("OnClick", function()
+        NW.SetPassiveActivityDetection(this:GetChecked() and true or false)
+    end)
+    passiveCheck:SetScript("OnEnter", function()
+        GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Beta: detect activity from other addons", 1, 1, 1)
+        GameTooltip:AddLine("Vanilla lets any addon see any other addon's", 1, 1, 1, true)
+        GameTooltip:AddLine("messages, so this shows groupmates as |cFF00FF7Factive|r", 1, 1, 1, true)
+        GameTooltip:AddLine("if their OWN addons (boss mods, threat meters,", 1, 1, 1, true)
+        GameTooltip:AddLine("etc.) fire recently - works even if they don't", 1, 1, 1, true)
+        GameTooltip:AddLine("have WDLD. Only fills in where there's no real", 1, 1, 1, true)
+        GameTooltip:AddLine("ping number, and mostly needs combat to see", 1, 1, 1, true)
+        GameTooltip:AddLine("anything - it's not proof of good latency.", 1, 1, 1, true)
+        GameTooltip:Show()
+    end)
+    passiveCheck:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    s.passiveCheck = passiveCheck
+
+    local passiveLabel = s:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    passiveLabel:SetPoint("LEFT", passiveCheck, "RIGHT", 4, 0)
+    passiveLabel:SetText("Detect activity (beta)")
+    s.passiveLabel = passiveLabel
+
     NW.settingsFrame = s
 end
 
@@ -1112,6 +1273,7 @@ function NW.ToggleSettings()
         NW.settingsFrame.pingIntervalSlider:SetValue(NW.PING_INTERVAL)
         NW.settingsFrame.rosterCheck:SetChecked(NW.rosterBroadcast)
         NW.settingsFrame.unlockCheck:SetChecked(NW.pingLabelsUnlocked)
+        NW.settingsFrame.passiveCheck:SetChecked(NW.passiveActivityEnabled)
         NW.settingsFrame:Show()
     end
 end
@@ -1431,6 +1593,7 @@ ev:SetScript("OnEvent", function()
             NW.PING_INTERVAL = NW_PingInterval
         end
         if NW_RosterBroadcast ~= nil then NW.rosterBroadcast = NW_RosterBroadcast end
+        if NW_PassiveActivity ~= nil then NW.passiveActivityEnabled = NW_PassiveActivity end
         if NW_PingLabelOffsetX then NW.pingLabelOffsetX = NW_PingLabelOffsetX end
         if NW_PingLabelOffsetY then NW.pingLabelOffsetY = NW_PingLabelOffsetY end
         if NW_MinimapAngle then NW.minimapAngle = NW_MinimapAngle end
@@ -1443,6 +1606,9 @@ ev:SetScript("OnEvent", function()
             NW.HandlePingReply(arg2)
         elseif arg1 == NW.ROSTER_PREFIX and arg4 ~= UnitName("player") then
             NW.HandleRosterMessage(arg4, arg2)
+        end
+        if NW.passiveActivityEnabled then
+            NW.RecordPassiveActivity(arg4)
         end
     elseif event == "PARTY_MEMBERS_CHANGED" or event == "RAID_ROSTER_UPDATE" then
         NW.PruneRosterToGroup()

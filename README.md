@@ -1,4 +1,4 @@
-# Wiredbro's DDOS Lag Detector (v1.0.9)
+# Wiredbro's DDOS Lag Detector (v1.1.0)
 
 A connection-stability monitor for WoW 1.12 (vanilla) clients — tracks latency spikes and stalls, does a real round-trip ping, and optionally shares that ping with your party/raid so you can tell whether a rough patch is just you or the whole server.
 
@@ -62,13 +62,23 @@ All equivalent: `/wdld`, `/nw`, `/netwatch`
 /wdld set roster off   stops sharing (you can still see others')
 ```
 
-Right-click the monitor to open settings: update interval, ping interval (both 0.5s–10s sliders), the ping on/off checkbox, the roster-share checkbox, an "Unlock ping label position" checkbox (see below), and a button to open the Group Ping panel.
+Right-click the monitor to open settings: update interval, ping interval (both 0.5s–10s sliders), the ping on/off checkbox, the roster-share checkbox, an "Unlock ping label position" checkbox with a "Reset Label Position" button, a "Detect activity (beta)" checkbox (see below), and a button to open the Group Ping panel.
 
 A minimap button (drag it around the ring to reposition) gives the same two actions without a slash command: left-click shows/hides the monitor, right-click opens settings.
 
 ### Repositioning the ping labels
 
-The default spot for each ping label is a best guess, and it can land somewhere awkward depending on which unit-frame addon you run and how it's sized or skinned (see the ShaguTweaks/pfUI raid frame notes above - both needed real tweaking to look right). Rather than guess forever, check "Unlock ping label position" in settings: every label gets a visible border and becomes draggable. Drag any one of them to where you want it, then uncheck the box to lock it back down. The nudge you make is shared across every label (party, raid, whichever addon) and saved, so you only have to do it once.
+The default spot for each ping label is a best guess, and it can land somewhere awkward depending on which unit-frame addon you run and how it's sized or skinned (see the ShaguTweaks/pfUI raid frame notes above - both needed real tweaking to look right). Rather than guess forever, check "Unlock ping label position" in settings: every label gets a visible border and becomes draggable, and hovering one shows a tooltip naming whose label it is (handy in a packed raid frame grid). **Drag just one of them** - the nudge you make is shared across every label (party, raid, whichever addon), so dragging a second one moves everything again rather than adding a second independent position. Uncheck the box to lock it back down, or hit "Reset Label Position" to return everything to its default spot.
+
+### Beta: detecting activity from other addons
+
+Vanilla predates `RegisterAddonMessagePrefix` (added in a later expansion to cut down on spam), so `CHAT_MSG_ADDON` fires for every addon's messages here, not just ones this addon recognizes. That means a groupmate's own boss mod, threat meter, or other chatty addon firing at all is visible as evidence their client is still alive - a free "still around" signal for someone who doesn't have WDLD themselves.
+
+Turn it on with "Detect activity (beta)" in settings. It only ever fills in where there's no real ping number, showing `active` in green instead of a blank space. Two things worth knowing:
+- It mostly needs **combat** to see anything - boss mods and threat meters are the chattiest sources, and they're quiet outside a fight.
+- It's **not proof of good latency**, just that something of theirs got through recently. A laggy client can still eventually deliver a queued message late.
+
+Treat it as "at least they weren't fully disconnected as of a moment ago," not a real measurement.
 
 ## Installation
 

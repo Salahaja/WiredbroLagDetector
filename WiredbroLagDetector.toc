@@ -1,7 +1,7 @@
 ## Interface: 11200
-## Version: 1.0.9
+## Version: 1.1.0
 ## Title: Wiredbro's DDOS Lag Detector
 ## Notes: Latency/stability monitor - flags connection spikes and stalls with a timestamped log, so you can correlate rough patches with server attacks.
 ## Author: You
-## SavedVariables: NW_Log, NW_WarnThreshold, NW_SevereThreshold, NW_FramePos, NW_SettingsPos, NW_RosterPos, NW_PingEnabled, NW_SampleInterval, NW_PingInterval, NW_RosterBroadcast, NW_MinimapAngle, NW_PingLabelOffsetX, NW_PingLabelOffsetY
+## SavedVariables: NW_Log, NW_WarnThreshold, NW_SevereThreshold, NW_FramePos, NW_SettingsPos, NW_RosterPos, NW_PingEnabled, NW_SampleInterval, NW_PingInterval, NW_RosterBroadcast, NW_MinimapAngle, NW_PingLabelOffsetX, NW_PingLabelOffsetY, NW_PassiveActivity
 WiredbroLagDetector.lua
