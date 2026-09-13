@@ -13,7 +13,7 @@ local function check(label, got, want)
     end
 end
 
--- Extra API surface WDLD touches that the Frameroids stub doesn't need.
+-- Extra API surface this addon touches beyond what wow_stub.lua covers.
 local function installWdldExtras()
     GetNetStats = function() return 0, 0, 42, 0 end
     SendAddonMessage = function() end

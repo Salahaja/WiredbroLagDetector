@@ -23,6 +23,14 @@
 
     Load it with dofile() from the repo root; it returns the Stub table and
     installs the globals as a side effect.
+
+    This file is addon-agnostic and is kept as an independent COPY in each
+    addon repo that uses it, rather than shared from one place. That's
+    deliberate: each addon ships and is cloned on its own, so a test harness
+    that reached into a sibling repo would make a standalone addon only
+    testable when some unrelated addon happened to be checked out next to it.
+    If you change something here worth having elsewhere, copy it across by
+    hand - there is no link between the copies.
 --]]
 
 local Stub = {}

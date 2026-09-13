@@ -2,7 +2,7 @@
     vanilla_lint.lua - checks addon source against what WoW 1.12 actually runs.
 
     Usage (from the repo root):
-        lua tools/vanilla_lint.lua GrayfathersFrameroids.lua [more files...]
+        lua tools/vanilla_lint.lua WiredbroLagDetector.lua [more files...]
 
     Why this exists on top of `luac -p`: the interpreter available on a modern
     machine is Lua 5.4, but vanilla 1.12 runs Lua 5.0. Every syntax feature
