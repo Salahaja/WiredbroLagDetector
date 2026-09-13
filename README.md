@@ -1,4 +1,4 @@
-# Wiredbro's DDOS Lag Detector (v1.1.0)
+# Wiredbro's DDOS Lag Detector (v1.2.0)
 
 A connection-stability monitor for WoW 1.12 (vanilla) clients — tracks latency spikes and stalls, does a real round-trip ping, and optionally shares that ping with your party/raid so you can tell whether a rough patch is just you or the whole server.
 
@@ -27,6 +27,7 @@ There's also no true packet-loss percentage exposed to addons at all — that's 
 - **This is a round trip, not a one-way ping.** The message has to travel to the server, get relayed back down to you, and get read by the client before the timer stops — so the number will normally read noticeably higher than a one-way network ping (think traceroute-style hop times), because it's actually measuring "there and back" plus whatever the server itself takes to relay it. That's expected, not a bug - it's also arguably the more honest number, since it's what actually happens every time you cast a spell or send a chat message, not just a raw network figure.
 - Opt-in: run `/wdld pingtest` once to confirm it works before turning on the automatic background version.
 - Timeout is adaptive (2x your last real round trip, or 3x current home latency before any round trip has completed) rather than a fixed guess.
+- Your own ping is stamped on your **player frame**, the same way group members' pings are stamped on theirs, so the number you care about most doesn't require opening a window. It positions independently of the group labels and can be dragged anywhere on screen (see [Repositioning](#repositioning-the-ping-labels)), and it works solo, since it reads your locally measured round trip rather than the group roster.
 - Reply-matching uses a small incrementing counter, not a raw timestamp — round-tripping a float with many decimal digits through `tostring()`/`tonumber()` can lose enough precision once `GetTime()` is large that an exact-equality check fails even for a reply that arrived on time, which looked like frequent phantom timeouts before this was fixed.
 
 ### Group Ping sync
@@ -68,7 +69,18 @@ A minimap button (drag it around the ring to reposition) gives the same two acti
 
 ### Repositioning the ping labels
 
-The default spot for each ping label is a best guess, and it can land somewhere awkward depending on which unit-frame addon you run and how it's sized or skinned (see the ShaguTweaks/pfUI raid frame notes above - both needed real tweaking to look right). Rather than guess forever, check "Unlock ping label position" in settings: every label gets a visible border and becomes draggable, and hovering one shows a tooltip naming whose label it is (handy in a packed raid frame grid). **Drag just one of them** - the nudge you make is shared across every label (party, raid, whichever addon), so dragging a second one moves everything again rather than adding a second independent position. Uncheck the box to lock it back down, or hit "Reset Label Position" to return everything to its default spot.
+The default spot for each ping label is a best guess, and it can land somewhere awkward depending on which unit-frame addon you run and how it's sized or skinned (see the ShaguTweaks/pfUI raid frame notes above - both needed real tweaking to look right). Rather than guess forever, check "Unlock ping label position" in settings: every label gets a visible border and becomes draggable, and hovering one shows a tooltip naming whose label it is (handy in a packed raid frame grid). Uncheck the box to lock it back down, or hit "Reset Label Position" to return everything to its default spot.
+
+There are **two independent positions**, not one:
+
+- **The group labels** (party, raid, whichever addon draws them) share a single position. That's deliberate - they're a grid, and what you're adjusting is where the number sits *on* a member frame, which should be the same answer for all forty of them. So **drag just one of them**; dragging a second moves everything again rather than adding a second independent position.
+- **Your own label** moves on its own. It's parented to the screen rather than to your player frame, so you can park it anywhere - including nowhere near the unit frames - without dragging the group labels along with it.
+
+### Your own ping, on your own frame
+
+Your ping is stamped on your player frame the same way group members' pings are stamped on theirs, so the number you care about most isn't the one you have to open a window to see. It shows your round-trip value with the same coloring as the monitor (yellow at 1.5x your home latency, red at 2.5x), `--` in red when pings are going unanswered, and a grey `off` if you've turned ping off entirely.
+
+It reads your locally measured round-trip directly rather than going through the group roster, so it works when you're solo - there's nobody broadcasting to build a roster from. It also keeps updating while the main window is hidden (`/wdld hide`).
 
 ### Beta: detecting activity from other addons
 
@@ -93,6 +105,17 @@ The client identifies an addon by its folder name, which must contain a matching
 - **Requires a guild for the round-trip ping.** Group Ping sync (PARTY/RAID) rides that same ping, so it also needs the ping turned on and a guild - only the always-on Home latency line on the HUD needs neither.
 - **`GetNetStats()`'s exact field order isn't independently verified on every client build.** Run `/wdld probe` if the displayed numbers look wrong.
 - **Packet loss is inferred, not measured.** There's no API for a true loss percentage — latency spikes and ping timeouts are the closest available proxy.
+
+## Development
+
+`tools/` runs this addon's logic on a desktop Lua, outside the game. It isn't shipped in the release zip and the client never loads it.
+
+```
+lua tools/vanilla_lint.lua WiredbroLagDetector.lua
+lua tools/test_player_label.lua
+```
+
+`vanilla_lint.lua` checks the source against what 1.12 actually runs — important because any Lua you can install today is 5.4 while vanilla is 5.0, so `#`, `%`, `goto`, `//` and bitwise operators all parse cleanly and then throw a script error in-game. It also flags later standard-library and WoW API calls. `wow_stub.lua` implements enough of the client to load the addon, with frames whose anchor geometry actually resolves, so label positions can be asserted rather than eyeballed. `test_player_label.lua` covers the player ping label: where it anchors, what it displays in each ping state, and that moving it doesn't drag the group labels along with it.
 
 ## Author
 

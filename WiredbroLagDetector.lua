@@ -601,19 +601,50 @@ end
 -- at once, regardless of which addon actually created the underlying frame.
 NW.pingLabelHolders   = {}
 NW.pingLabelsUnlocked = false -- edit mode - not persisted, always starts locked after a reload
-NW.pingLabelOffsetX   = 0     -- shared nudge applied on top of every label's own default position -
-NW.pingLabelOffsetY   = 0     -- see settings: "Unlock ping label position"
+
+-- Nudges applied on top of each label's own default position (see settings:
+-- "Unlock ping label position"). Split into independent buckets because the
+-- group labels and your own label want different treatment: dragging one raid
+-- label is meant to move all forty together (they're a grid - you're adjusting
+-- where the number sits ON a member frame), but your own ping is a single
+-- readout you may well want parked somewhere unrelated to your player frame
+-- entirely. One shared offset made that impossible - moving yours dragged the
+-- whole raid along with it.
+NW.pingLabelOffsets = {
+    group  = { x = 0, y = 0 },
+    player = { x = 0, y = 0 },
+}
+
+local function SavePingLabelOffsets(key)
+    local o = NW.pingLabelOffsets[key]
+    if key == "player" then
+        NW_PlayerPingOffsetX, NW_PlayerPingOffsetY = o.x, o.y
+    else
+        NW_PingLabelOffsetX, NW_PingLabelOffsetY = o.x, o.y
+    end
+end
 
 -- Builds one ping label consistently: a small holder frame (needed both for
 -- FrameLevel elevation on the densely-layered addons, and now for drag
 -- support) plus the FontString itself. basePoint/baseRelPoint/baseX/baseY is
--- that label's own default position for this frame type - the shared offset
--- is added on top of it, never replaces it, so unlocking and dragging never
--- loses track of a sane fallback position.
-local function CreatePingLabel(frame, basePoint, baseRelPoint, baseX, baseY, justify, tinyFont)
+-- that label's own default position for this frame type - the offset is added
+-- on top of it, never replaces it, so unlocking and dragging never loses track
+-- of a sane fallback position.
+--
+-- opts (all optional): offsetKey picks which bucket in NW.pingLabelOffsets
+-- this label follows, defaulting to "group"; anchorTo anchors the label to a
+-- different frame than its parent (the player label parents to UIParent so it
+-- can be dragged anywhere and never inherits PlayerFrame's visibility, while
+-- still defaulting to a position ON the player frame); strata lifts it above a
+-- parent whose own strata would otherwise win regardless of FrameLevel.
+local function CreatePingLabel(frame, basePoint, baseRelPoint, baseX, baseY, justify, tinyFont, opts)
+    opts = opts or {}
     local holder = CreateFrame("Frame", nil, frame)
     holder:SetWidth(60); holder:SetHeight(14)
     holder:SetFrameLevel(200)
+    holder.offsetKey = opts.offsetKey or "group"
+    holder.anchorTo  = opts.anchorTo or frame
+    if opts.strata then holder:SetFrameStrata(opts.strata) end
     holder:SetBackdrop({
         edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border", tile = true, tileSize = 8, edgeSize = 8
     })
@@ -652,17 +683,20 @@ local function CreatePingLabel(frame, basePoint, baseRelPoint, baseX, baseY, jus
         -- that delta to whatever the offset already was keeps everything in
         -- the same, small, frame-relative coordinate space.
         this.dragStartCursorX, this.dragStartCursorY = GetCursorPosition()
-        this.dragStartOffsetX, this.dragStartOffsetY = NW.pingLabelOffsetX, NW.pingLabelOffsetY
+        local o = NW.pingLabelOffsets[this.offsetKey]
+        this.dragStartOffsetX, this.dragStartOffsetY = o.x, o.y
     end)
     holder:SetScript("OnDragStop", function()
         this:StopMovingOrSizing()
         if this.dragStartCursorX then
             local px, py = GetCursorPosition()
             local scale = this:GetEffectiveScale()
-            NW.pingLabelOffsetX = this.dragStartOffsetX + (px - this.dragStartCursorX) / scale
-            NW.pingLabelOffsetY = this.dragStartOffsetY + (py - this.dragStartCursorY) / scale
-            NW_PingLabelOffsetX = NW.pingLabelOffsetX
-            NW_PingLabelOffsetY = NW.pingLabelOffsetY
+            -- Only this label's own bucket moves, so dragging your own ping
+            -- readout leaves every group label where it was, and vice versa.
+            local o = NW.pingLabelOffsets[this.offsetKey]
+            o.x = this.dragStartOffsetX + (px - this.dragStartCursorX) / scale
+            o.y = this.dragStartOffsetY + (py - this.dragStartCursorY) / scale
+            SavePingLabelOffsets(this.offsetKey)
         end
         NW.RepositionPingLabels() -- re-anchor every label (including this one) using the corrected offset
     end)
@@ -673,9 +707,10 @@ local function CreatePingLabel(frame, basePoint, baseRelPoint, baseX, baseY, jus
 end
 
 function NW.RepositionPingLabel(holder)
+    local o = NW.pingLabelOffsets[holder.offsetKey or "group"]
     holder:ClearAllPoints()
-    holder:SetPoint(holder.basePoint, holder:GetParent(), holder.baseRelPoint,
-        holder.baseX + NW.pingLabelOffsetX, holder.baseY + NW.pingLabelOffsetY)
+    holder:SetPoint(holder.basePoint, holder.anchorTo or holder:GetParent(), holder.baseRelPoint,
+        holder.baseX + o.x, holder.baseY + o.y)
 end
 
 function NW.RepositionPingLabels()
@@ -696,6 +731,39 @@ function NW.SetPingLabelsUnlocked(unlocked)
         else
             holder:SetBackdropBorderColor(1, 0.82, 0, 0)
         end
+    end
+end
+
+-- Your own ping, stamped on your own player frame the same way group members'
+-- pings are stamped on theirs - so the number you care about most isn't the one
+-- you have to open a window to see.
+--
+-- Two things make it deliberately unlike the group labels. It reads NW.lastRTT
+-- directly instead of going through the roster table, because the roster is
+-- built from broadcasts between group members and would be empty when you're
+-- solo - your own ping is measured locally and is always available. And it
+-- parents to UIParent rather than PlayerFrame, anchoring to PlayerFrame only
+-- for its default position, so it can be dragged anywhere on screen (including
+-- well away from the unit frames) and doesn't vanish if something hides the
+-- player frame.
+function NW.RefreshPlayerFrameLabel()
+    local holder = NW.playerPingHolder
+    if not holder then
+        local anchor = getglobal("PlayerFrame")
+        if not anchor then return end -- nothing to anchor a default position to yet
+        holder = CreatePingLabel(UIParent, "TOPLEFT", "TOPLEFT", 4, 4, "LEFT", false,
+            { offsetKey = "player", anchorTo = anchor, strata = "MEDIUM" })
+        holder:EnableMouse(NW.pingLabelsUnlocked)
+        NW.playerPingHolder = holder
+    end
+
+    holder.memberName = UnitName("player")
+    if not NW.pingEnabled then
+        holder.text:SetText("|cFF888888off|r")
+    elseif not NW.lastRTT then
+        holder.text:SetText("|cFFFF3333--|r")
+    else
+        holder.text:SetText(NW.ColorForPing(NW.lastRTT) .. NW.lastRTT .. "ms|r")
     end
 end
 
@@ -1226,10 +1294,15 @@ function NW.CreateSettingsFrame()
     resetBtn:SetPoint("TOP", s, "TOP", 0, -216)
     resetBtn:SetText("Reset Label Position")
     resetBtn:SetScript("OnClick", function()
-        NW.pingLabelOffsetX, NW.pingLabelOffsetY = 0, 0
-        NW_PingLabelOffsetX, NW_PingLabelOffsetY = 0, 0
+        -- Resets both buckets: one button, because "put the labels back" is a
+        -- single intention even though the group labels and your own label move
+        -- separately.
+        for key, o in pairs(NW.pingLabelOffsets) do
+            o.x, o.y = 0, 0
+            SavePingLabelOffsets(key)
+        end
         NW.RepositionPingLabels()
-        NW.Say("ping label position reset to default.")
+        NW.Say("ping label positions reset to default.")
     end)
     s.resetBtn = resetBtn
 
@@ -1491,6 +1564,11 @@ end
 -- GetNetStats() sample tick, and shouldn't require (or overwrite) the world/home
 -- values to refresh just its own line.
 function NW.UpdateChatRTTDisplay()
+    -- Ahead of the NW.frame guard on purpose: the label on your player frame is
+    -- independent of the main window, so it has to keep updating while that
+    -- window is hidden (/wdld hide) or before it has been built.
+    NW.RefreshPlayerFrameLabel()
+
     if not NW.frame then return end
     if not NW.pingEnabled then
         NW.frame.rttText:SetText("Ping:  |cFF888888off|r")
@@ -1594,8 +1672,12 @@ ev:SetScript("OnEvent", function()
         end
         if NW_RosterBroadcast ~= nil then NW.rosterBroadcast = NW_RosterBroadcast end
         if NW_PassiveActivity ~= nil then NW.passiveActivityEnabled = NW_PassiveActivity end
-        if NW_PingLabelOffsetX then NW.pingLabelOffsetX = NW_PingLabelOffsetX end
-        if NW_PingLabelOffsetY then NW.pingLabelOffsetY = NW_PingLabelOffsetY end
+        -- NW_PingLabelOffsetX/Y keep their original names so an existing saved
+        -- group-label position still loads after this update.
+        if NW_PingLabelOffsetX then NW.pingLabelOffsets.group.x = NW_PingLabelOffsetX end
+        if NW_PingLabelOffsetY then NW.pingLabelOffsets.group.y = NW_PingLabelOffsetY end
+        if NW_PlayerPingOffsetX then NW.pingLabelOffsets.player.x = NW_PlayerPingOffsetX end
+        if NW_PlayerPingOffsetY then NW.pingLabelOffsets.player.y = NW_PlayerPingOffsetY end
         if NW_MinimapAngle then NW.minimapAngle = NW_MinimapAngle end
         NW.CreateFrame()
         NW.CreateMinimapButton()
