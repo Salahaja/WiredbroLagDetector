@@ -165,6 +165,65 @@ NW.pingMissStreak = 0 -- consecutive timed-out pings; gates chat alerts so one m
 -- roster broadcast (sender = someone else, or your own echoing back) can never
 -- be mistaken for a ping reply.
 NW.ROSTER_PREFIX            = "WIREDBROLAGRC"
+--[[ How far apart the recent frames were, which is the error bar on every
+     measurement here.
+
+     Everything in this addon times with GetTime() but can only LOOK at frame
+     boundaries: an addon message is delivered to Lua during a frame, not when
+     the packet lands. So a reply that arrived instantly is still only noticed
+     at the next frame, and the gap between frames is added to whatever is
+     being measured.
+
+     In the foreground that gap is 16-33ms and nobody cares. In the background
+     WoW throttles the window hard -- alt-tab to your other box and this one
+     may be rendering a handful of frames a second -- and the gap becomes most
+     of a second, which is larger than the 500ms "latency elevated" threshold.
+     The addon then reports spikes, message loss and missing group members that
+     are entirely the frame rate and have nothing to do with the server.
+
+     That is the opposite of this addon's job, which is telling you when the
+     SERVER is in trouble. So the gap is measured and discounted rather than
+     blamed on the network. ]]
+NW.FRAME_GAP_KEEP  = 8     -- recent frames to remember
+NW.FRAME_GAP_NOISE = 0.1   -- below this (10fps) the gap is not worth discounting
+NW.PING_MIN_FRAMES = 3     -- frames we must have run before calling a ping lost
+NW.frameGaps       = {}
+NW.frameGapAt      = 0
+NW.frameCount      = 0
+
+--- Record one frame's length. Called from OnUpdate, which is the only place
+--- that knows how long it has been since the last one.
+function NW.NoteFrame(elapsed)
+    if type(elapsed) ~= "number" or elapsed < 0 then return end
+    NW.frameCount = NW.frameCount + 1
+    table.insert(NW.frameGaps, elapsed)
+    while table.getn(NW.frameGaps) > NW.FRAME_GAP_KEEP do
+        table.remove(NW.frameGaps, 1)
+    end
+    NW.frameGapAt = GetTime()
+end
+
+--[[ The worst of the recent frames, in seconds.
+
+     The worst rather than the average, because this is an error BOUND: a
+     reply could have been sitting in the queue for the whole of the longest
+     recent frame, and a mean would quietly understate that. ]]
+function NW.FrameGap()
+    local worst = 0
+    for i = 1, table.getn(NW.frameGaps) do
+        if NW.frameGaps[i] > worst then worst = NW.frameGaps[i] end
+    end
+    return worst
+end
+
+--- True when frames are far enough apart that measurements cannot be trusted.
+--- Nearly always means the window is in the background; a foregrounded client
+--- in real trouble looks the same from here, and is treated the same, because
+--- in both cases we genuinely were not looking.
+function NW.FrameStarved()
+    return NW.FrameGap() >= NW.FRAME_GAP_NOISE
+end
+
 NW.ROSTER_BROADCAST_INTERVAL = 5   -- seconds between broadcasts, independent of the sample interval
 NW.ROSTER_MISS_LIMIT        = 3    -- missed broadcast intervals (elapsed time / ROSTER_BROADCAST_INTERVAL,
                                     -- since there's no per-member counter, just a shared fixed interval)
@@ -272,7 +331,25 @@ end
 function NW.CheckPendingPingTimeout()
     if not NW.pendingPing then return end
     local timeout = NW.pendingPing.timeout or 5
+
     if GetTime() - NW.pendingPing.sentAt <= timeout then return end
+
+    --[[ Time is not the only thing that has to pass. A reply is handed to Lua
+         during a frame, so "no reply" is a claim about frames we actually ran,
+         and while the window is in the background there may have been barely
+         one in the whole timeout. Calling the ping lost on that basis reports
+         message loss that never happened -- which, with the default 1s
+         timeout, is what alt-tabbing to the other box produced every second.
+
+         Counting the chances to notice rather than widening the clock, because
+         the clock is not what was short: at eight frames a second there is
+         ample opportunity inside one second and the timeout is perfectly fair,
+         while a window rendering once a second has had exactly one look no
+         matter how long you wait. ]]
+    if NW.pendingPing.frameAt then
+        local looks = NW.frameCount - NW.pendingPing.frameAt
+        if looks < NW.PING_MIN_FRAMES then return end
+    end
 
     local wasTest = NW.pendingPing.isTest
     NW.pendingPing = nil
@@ -361,7 +438,8 @@ function NW.SendPing()
     local now = GetTime()
     local ok = pcall(SendAddonMessage, NW.PING_PREFIX, nonce, "GUILD")
     if ok then
-        NW.pendingPing = { sentAt = now, nonce = nonce, timeout = NW.ComputePingTimeout() }
+        NW.pendingPing = { sentAt = now, nonce = nonce, frameAt = NW.frameCount,
+                           timeout = NW.ComputePingTimeout() }
     end
 end
 
@@ -387,7 +465,8 @@ function NW.PingTest()
         NW.Say("|cFFFF3333SendAddonMessage errored:|r " .. tostring(err))
         return
     end
-    NW.pendingPing = { sentAt = now, nonce = nonce, isTest = true, timeout = timeout }
+    NW.pendingPing = { sentAt = now, nonce = nonce, isTest = true,
+                       frameAt = NW.frameCount, timeout = timeout }
 end
 
 function NW.HandlePingReply(nonceStr)
@@ -398,15 +477,27 @@ function NW.HandlePingReply(nonceStr)
     NW.pendingPing = nil
     NW.lastRTT = rtt
 
+    --[[ What of that we can actually attribute to the network.
+
+         The reply sat in the queue until this frame, so up to one frame gap of
+         the figure above is this client not looking. Subtracting it is the
+         conservative reading: it can understate a real spike by a frame, and
+         it cannot invent one. The raw number is still what gets displayed and
+         logged -- it is what the round trip really took -- but only the part
+         we can defend is allowed to raise an alarm. ]]
+    local gapMs = math.floor(NW.FrameGap() * 1000)
+    local networkRTT = rtt - gapMs
+    if networkRTT < 0 then networkRTT = 0 end
+
     if wasTest then
         NW.Say("|cFF00FF7Fping test succeeded|r - round trip: " .. rtt .. "ms. Self-whisper pinging works on this server; run /wdld set ping on to enable it automatically.")
         return
     end
 
-    if rtt >= NW.severeThreshold then
+    if networkRTT >= NW.severeThreshold then
         NW.PushLog("pingsevere", rtt)
         NW.Say("|cFFFF3333ping spike: " .. rtt .. "ms|r")
-    elseif rtt >= NW.warnThreshold then
+    elseif networkRTT >= NW.warnThreshold then
         NW.PushLog("pingwarn", rtt)
     end
 
@@ -569,7 +660,15 @@ end
 
 -- Shared by every per-member ping display (party/raid frame labels, the
 -- Group Ping panel) so the missed-broadcast logic only lives in one place.
+--[[ How many broadcasts we have not heard from someone.
+
+     Returns 0 while our own frames are far apart, because a broadcast we were
+     not awake to receive says nothing about them. Dual-boxing hit this from
+     both sides: alt-tab away and this client stops noticing the other one, then
+     marks it "--" as though it had gone quiet, when the client that stopped
+     paying attention was this one. ]]
 function NW.RosterMissedCount(data)
+    if NW.FrameStarved() then return 0 end
     return math.floor((GetTime() - data.time) / NW.ROSTER_BROADCAST_INTERVAL)
 end
 
@@ -1699,6 +1798,9 @@ ev:SetScript("OnEvent", function()
 end)
 
 ev:SetScript("OnUpdate", function()
+    -- First, so everything below is judged against how long we have been away.
+    NW.NoteFrame(arg1)
+
     NW.sampleTimer = NW.sampleTimer + arg1
     if NW.sampleTimer >= NW.SAMPLE_INTERVAL then
         NW.sampleTimer = 0

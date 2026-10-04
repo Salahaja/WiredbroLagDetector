@@ -2,6 +2,47 @@
 
 A connection-stability monitor for WoW 1.12 (vanilla) clients — tracks latency spikes and stalls, does a real round-trip ping, and optionally shares that ping with your party/raid so you can tell whether a rough patch is just you or the whole server.
 
+## Alt-tabbing, and why it used to lie
+
+WoW throttles a window that does not have focus. Alt-tab to a second box and
+this client may be rendering a handful of frames a second, and that throttle
+looks exactly like network trouble from the inside:
+
+- An addon message is handed to Lua **during a frame**, not when the packet
+  lands. A reply that arrived instantly is only noticed up to a whole frame
+  later, and the round trip reads that much longer. At the default thresholds a
+  background frame gap alone can clear "latency elevated".
+- With a 1s ping timeout and barely one frame inside that second, the reply had
+  nowhere to be noticed at all, and the ping was called lost. That fired every
+  second while alt-tabbed.
+- Broadcasts from the other box land in frames this client never ran, so it
+  looked like the other box had gone quiet and got marked `--`.
+
+None of that is the server, which is the only thing this addon is for. Since
+1.2.1 the frame gap is measured and discounted instead:
+
+- **The round trip is still reported as what it took**, because that is what it
+  took. But only the part that cannot be explained by the frame gap is allowed
+  to raise an alarm. The discount can understate a real spike by one frame; it
+  cannot invent one.
+- **A ping is not called lost until we have actually looked** — three frames
+  since it went out, not three seconds. The clock was never what was short: at
+  eight frames a second a one-second timeout is perfectly fair, while a window
+  rendering once a second has had one look however long you wait.
+- **Group members are not judged while we were asleep.** A broadcast we were not
+  running to receive says nothing about them.
+
+The worst recent frame is used rather than the average, because this is an
+error *bound*: a reply could have waited out the longest frame, and a mean
+would quietly understate it.
+
+`GetNetStats()` is unaffected by any of this -- the client measures that itself
+-- so the "latency spike" warnings from ordinary sampling were always honest.
+It was only the ping round trip and the roster that inherited the frame rate.
+
+If you want the background client sharper anyway, raise its frame cap:
+`/console maxfpsbk 30`.
+
 ## Why this exists
 
 Every group has that one person who calls out "I lagged" every time something goes wrong — a missed interrupt, a death, a wipe. Sometimes they're right and the server really is having a moment. Sometimes it's just them. Without a number, there's no way to tell which, and it turns into an argument nobody can actually settle.
